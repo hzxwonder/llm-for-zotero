@@ -1,0 +1,216 @@
+import { assert } from "chai";
+import { ensureConversationKeyLedgerEntry } from "../../src/shared/conversationKeyLedger";
+import {
+  resolveLiveAgentCredentials,
+  type LiveAgentCredentials,
+} from "../agent/liveAgentCredentials";
+
+declare const Zotero: any;
+declare const Services: any;
+
+const PREFIX = "extensions.zotero.llmforzotero";
+
+describe("DeepSeek Harness with the configured live provider", function () {
+  this.timeout(600000);
+  let credentials: LiveAgentCredentials;
+  let item: any;
+  let api: any;
+  const conversationKeys: number[] = [];
+  async function newConversation() {
+    const key = 2_500_800_000 + conversationKeys.length;
+    await ensureConversationKeyLedgerEntry({
+      conversationKey: key,
+      instanceID: `harness-test-${key}`,
+      conversationID: `harness-test-${key}`,
+      system: "upstream",
+      kind: "global",
+      profileSignature: "harness-live-test",
+      libraryID: item.libraryID,
+      issuedAt: Date.now(),
+    });
+    conversationKeys.push(key);
+    return key;
+  }
+  const title = `Harness verification ${Date.now()}`;
+  const saved = new Map<string, unknown>();
+  const report: Array<Record<string, unknown>> = [];
+
+  before(async function () {
+    const resolved = await resolveLiveAgentCredentials();
+    assert.isOk(resolved, "Live provider credentials must be configured");
+    credentials = resolved!;
+    api = Zotero.LLMForZotero.api.agent;
+    for (const [key, value] of Object.entries({
+      conversationSystem: "upstream",
+      enableAgentMode: true,
+      agentExecutionEngine: "deepseek_harness",
+      originalAgentPermissionMode: "safe",
+      deepseekHarnessNodePath: Services.env.get("LLM_FOR_ZOTERO_HARNESS_NODE"),
+      deepseekHarnessWorkerPath: Services.env.get(
+        "LLM_FOR_ZOTERO_HARNESS_WORKER",
+      ),
+    })) {
+      saved.set(key, Zotero.Prefs.get(`${PREFIX}.${key}`, true));
+      Zotero.Prefs.set(`${PREFIX}.${key}`, value, true);
+    }
+    item = new Zotero.Item("journalArticle");
+    item.libraryID = Zotero.Libraries.userLibraryID;
+    item.setField("title", title);
+    item.setField(
+      "abstractNote",
+      "A synthetic paper used to verify a Zotero agent integration.",
+    );
+    await item.saveTx();
+  });
+
+  after(async function () {
+    if (item) await Zotero.Items.erase([...(item.getNotes() || []), item.id]);
+    for (const [key, value] of saved) {
+      if (value === undefined) Zotero.Prefs.clear(`${PREFIX}.${key}`, true);
+      else Zotero.Prefs.set(`${PREFIX}.${key}`, value, true);
+    }
+    const reportPath = Services.env.get("LLM_FOR_ZOTERO_HARNESS_REPORT");
+    if (reportPath)
+      await Zotero.File.putContentsAsync(
+        reportPath,
+        JSON.stringify(
+          {
+            model: credentials?.model,
+            scenarios: report,
+          },
+          null,
+          2,
+        ),
+      );
+  });
+
+  async function run(
+    userText: string,
+    approve = false,
+    extra: Record<string, unknown> = {},
+  ) {
+    const events: any[] = [];
+    const result = await api.runTurn(
+      {
+        ...credentials,
+        conversationKey: await newConversation(),
+        mode: "agent",
+        conversationKind: "global",
+        libraryID: item.libraryID,
+        userText,
+        ...extra,
+      },
+      (event: any) => {
+        events.push(event);
+        if (event.type === "confirmation_required")
+          api.resolveConfirmation(event.requestId, approve);
+      },
+    );
+    assert.equal(result.kind, "completed");
+    assert.match(result.runId, /^harness-/);
+    return { result, events };
+  }
+
+  it("reads a real Zotero test item through a tool", async function () {
+    const { result, events } = await run(
+      `请调用 library_search 在文献库中搜索标题为「${title}」的测试论文，再用 library_read 读取其摘要。回答必须包含摘要的英文原文。`,
+    );
+    const calls = events
+      .filter((event) => event.type === "tool_call")
+      .map((event) => event.name);
+    assert.include(calls, "library_search");
+    assert.include(calls, "library_read");
+    assert.include(result.text, "synthetic paper");
+    assert.isTrue(events.some((event) => event.type === "message_delta"));
+    const trace = await api.getRunTrace(result.runId);
+    assert.equal(trace.run.status, "completed");
+    report.push({ scenario: "library_read", passed: true, tools: calls });
+  });
+
+  it("honors refusal of a note write in Safe mode", async function () {
+    const before = item.getNotes().length;
+    const { events } = await run(
+      `请为文献 itemId=${item.id} 新建一条子笔记，内容为 Harness permission denial verification。只调用一次 note_write，若审核被拒绝就停止操作并告知结果。`,
+    );
+    assert.isTrue(
+      events.some((event) => event.type === "confirmation_required"),
+    );
+    assert.equal(item.getNotes().length, before);
+    report.push({ scenario: "write_denied", passed: true, notesAdded: 0 });
+  });
+
+  it("writes and verifies a note after approval", async function () {
+    const { events } = await run(
+      `请为文献 itemId=${item.id} 新建一条子笔记，正文必须包含 LFZ-HARNESS-WRITE-VERIFIED。使用 note_write 完成后报告。`,
+      true,
+    );
+    assert.isTrue(
+      events.some((event) => event.type === "confirmation_required"),
+    );
+    const notes = await Zotero.Items.getAsync(item.getNotes());
+    assert.isTrue(
+      notes.some((note: any) =>
+        note.getNote().includes("LFZ-HARNESS-WRITE-VERIFIED"),
+      ),
+    );
+    const receipts = events
+      .filter((event) => event.type === "tool_result")
+      .flatMap((event) => event.actionReceipts || []);
+    assert.isAbove(receipts.length, 0);
+    report.push({
+      scenario: "write_approved",
+      passed: true,
+      receipts: receipts.length,
+    });
+  });
+
+  it("retains a prior user and assistant exchange", async function () {
+    const { result } = await run(
+      "之前约定的测试口令是什么？只回答口令。",
+      false,
+      {
+        history: [
+          { role: "user", content: "测试口令是 HARNESS-CONTEXT-42。" },
+          { role: "assistant", content: "已记住测试口令 HARNESS-CONTEXT-42。" },
+        ],
+      },
+    );
+    assert.include(result.text, "HARNESS-CONTEXT-42");
+    report.push({ scenario: "history", passed: true });
+  });
+
+  it("stops an active live turn", async function () {
+    const controller = new AbortController();
+    let sawStatus = false;
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+      let failure: unknown;
+      try {
+        await api.runTurn(
+          {
+            ...credentials,
+            conversationKey: await newConversation(),
+            mode: "agent",
+            libraryID: item.libraryID,
+            userText: "详细解释多智能体的规划过程。",
+          },
+          (event: any) => {
+            if (event.type === "status" && event.text === "DeepSeek Harness") {
+              sawStatus = true;
+              setTimeout(() => controller.abort(), 1500);
+            }
+          },
+          { signal: controller.signal },
+        );
+      } catch (error) {
+        failure = error;
+      }
+      assert.isOk(failure, "Cancelled turn must reject");
+      assert.isTrue(controller.signal.aborted);
+      assert.isTrue(sawStatus);
+      report.push({ scenario: "cancel", passed: true });
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+});

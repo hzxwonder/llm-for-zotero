@@ -1160,6 +1160,70 @@
 
               <html:div class="llm-pref-section">
                 <html:span class="llm-pref-section-title"
+                  >Execution engine</html:span
+                >
+                <html:div class="llm-pref-field">
+                  <html:label for="__addonRef__-agent-execution-engine"
+                    >Execution engine</html:label
+                  >
+                  <html:div class="llm-pref-control">
+                    <html:select
+                      id="__addonRef__-agent-execution-engine"
+                      class="llm-pref-select"
+                    >
+                      <html:option value="builtin">Built in</html:option>
+                      <html:option value="deepseek_harness"
+                        >DeepSeek Harness</html:option
+                      >
+                    </html:select>
+                    <html:span class="llm-pref-hint"
+                      >DeepSeek Harness uses the selected OpenAI-compatible API
+                      provider and the Original Agent permission
+                      mode.</html:span
+                    >
+                  </html:div>
+                </html:div>
+                <html:div
+                  id="__addonRef__-deepseek-harness-settings"
+                  hidden="hidden"
+                >
+                  <html:div class="llm-pref-field">
+                    <html:label for="__addonRef__-deepseek-harness-node-path"
+                      >Node executable</html:label
+                    >
+                    <html:div class="llm-pref-control">
+                      <html:input
+                        id="__addonRef__-deepseek-harness-node-path"
+                        class="llm-pref-input"
+                        type="text"
+                      ></html:input>
+                      <html:span class="llm-pref-hint"
+                        >Absolute path to Node.js 22.19+ or 24+.</html:span
+                      >
+                    </html:div>
+                  </html:div>
+                  <html:div class="llm-pref-field">
+                    <html:label for="__addonRef__-deepseek-harness-worker-path"
+                      >Harness worker script</html:label
+                    >
+                    <html:div class="llm-pref-control">
+                      <html:input
+                        id="__addonRef__-deepseek-harness-worker-path"
+                        class="llm-pref-input"
+                        type="text"
+                      ></html:input>
+                      <html:span class="llm-pref-hint"
+                        >Install the integrations/deepseek-harness dependencies,
+                        then select its worker.mjs file. Text context and Zotero
+                        tools are supported.</html:span
+                      >
+                    </html:div>
+                  </html:div>
+                </html:div>
+              </html:div>
+
+              <html:div class="llm-pref-section">
+                <html:span class="llm-pref-section-title"
                   >Permissions</html:span
                 >
                 <html:div class="llm-pref-field">

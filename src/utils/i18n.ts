@@ -13,6 +13,15 @@
 // ── Chinese (Simplified) translation map ────────────────────────────────────
 
 const zhCN: Record<string, string> = {
+  "Execution engine": "执行引擎",
+  "Node executable": "Node 可执行文件",
+  "Harness worker script": "Harness 工作进程脚本",
+  "DeepSeek Harness uses the selected OpenAI-compatible API provider and the Original Agent permission mode.":
+    "DeepSeek Harness 使用当前选择的 OpenAI 兼容 API 服务商和原生 Agent 权限模式。",
+  "Absolute path to Node.js 22.19+ or 24+.":
+    "Node.js 22.19+ 或 24+ 的绝对路径。",
+  "Install the integrations/deepseek-harness dependencies, then select its worker.mjs file. Text context and Zotero tools are supported.":
+    "安装 integrations/deepseek-harness 的依赖后，选择其中的 worker.mjs 文件。支持文本上下文和 Zotero 工具。",
   "Web search provider": "网页搜索服务",
   "AnySearch API key (optional)": "AnySearch API 密钥（可选）",
   "Test search (sends a public query)": "测试搜索（发送公开查询）",

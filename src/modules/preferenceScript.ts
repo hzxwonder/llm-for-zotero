@@ -1,4 +1,5 @@
 import { bindMineruLocalPreferences } from "./mineruLocalPreferences";
+import { getHarnessPreference } from "../deepseekHarness/prefs";
 import { appLogger } from "../core/logging";
 import { createProviderRequestScope } from "../utils/providerTransport";
 import {
@@ -4895,6 +4896,49 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         }
       });
     }
+  }
+
+  const executionEngine = doc.querySelector(
+    `#${config.addonRef}-agent-execution-engine`,
+  ) as HTMLSelectElement | null;
+  const harnessSettings = doc.querySelector(
+    `#${config.addonRef}-deepseek-harness-settings`,
+  ) as HTMLElement | null;
+  if (executionEngine) {
+    executionEngine.value =
+      getHarnessPreference("agentExecutionEngine") === "deepseek_harness"
+        ? "deepseek_harness"
+        : "builtin";
+    const syncHarnessSettings = () => {
+      if (harnessSettings)
+        harnessSettings.hidden = executionEngine.value !== "deepseek_harness";
+    };
+    syncHarnessSettings();
+    executionEngine.addEventListener("change", () => {
+      Zotero.Prefs.set(
+        `${config.prefsPrefix}.agentExecutionEngine`,
+        executionEngine.value,
+        true,
+      );
+      syncHarnessSettings();
+    });
+  }
+  for (const [id, pref] of [
+    ["deepseek-harness-node-path", "deepseekHarnessNodePath"],
+    ["deepseek-harness-worker-path", "deepseekHarnessWorkerPath"],
+  ]) {
+    const input = doc.querySelector(
+      `#${config.addonRef}-${id}`,
+    ) as HTMLInputElement | null;
+    if (!input) continue;
+    input.value = getHarnessPreference(pref);
+    input.addEventListener("change", () =>
+      Zotero.Prefs.set(
+        `${config.prefsPrefix}.${pref}`,
+        input.value.trim(),
+        true,
+      ),
+    );
   }
 
   if (originalAgentPermissionModeSelect) {
