@@ -260,7 +260,7 @@ plugins, and many Markdown readers.
 
 ## Agent Mode (beta)
 
-Original Agent supports an optional **DeepSeek Harness** execution engine with
+Agent settings include a separate **DeepSeek Harness** card with
 the selected OpenAI-compatible API provider and Zotero's existing tool approval
 controls. See the [DeepSeek Harness setup and integration guide](integrations/deepseek-harness/README.md).
 

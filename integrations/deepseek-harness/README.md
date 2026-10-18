@@ -1,6 +1,6 @@
 # DeepSeek Harness for Zotero
 
-Original Agent 可选用 DeepSeek Harness 执行多步任务。Harness 负责模型循环与工具调度；Zotero 负责工具校验、Safe / Auto / Yolo 审批、变更凭据、历史记录和撤销。模型、API 地址和 API 密钥来自聊天面板中选中的服务商。
+DeepSeek Harness 在 Agent 设置中提供独立卡片，用于执行多步任务。Harness 负责模型循环与工具调度；Zotero 负责工具校验、Safe / Auto / Yolo 审批、变更凭据、历史记录和撤销。模型、API 地址和 API 密钥来自聊天面板中选中的服务商。
 
 ## 安装与启用
 
@@ -12,12 +12,12 @@ Original Agent 可选用 DeepSeek Harness 执行多步任务。Harness 负责模
 npm ci --ignore-scripts --prefix integrations/deepseek-harness
 ```
 
-安装构建生成的 XPI 后，进入 Zotero 设置 → LLM-for-Zotero → Agent → Original Agent：
+安装构建生成的 XPI 后，进入 Zotero 设置 → LLM-for-Zotero → Agent → DeepSeek Harness：
 
-1. 启用 Original Agent，将“执行引擎”设为 **DeepSeek Harness**。
+1. 开启 **DeepSeek Harness** 卡片的开关。原生 Agent 和 Harness 共用聊天中的 Agent 按钮，开启其中一个会选中对应引擎。
 2. “Node 可执行文件”填写 Node 的绝对路径，可通过 `node -p process.execPath` 查看。
 3. “Harness 工作进程脚本”填写本目录 `worker.mjs` 的绝对路径。
-4. 在聊天面板选择服务商及模型，开启 Agent 后发送任务。
+4. 在聊天面板选择服务商及模型，开启 Agent 后发送任务。权限与网页搜索配置位于原生 Agent 卡片中。
 
 工作进程目录应保留在稳定位置，并保留其 `node_modules`。执行引擎选择对 Original Agent 的侧栏、独立窗口和扩展 API 生效。默认使用内置执行引擎。
 

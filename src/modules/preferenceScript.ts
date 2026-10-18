@@ -1,5 +1,9 @@
 import { bindMineruLocalPreferences } from "./mineruLocalPreferences";
-import { getHarnessPreference } from "../deepseekHarness/prefs";
+import {
+  getHarnessPreference,
+  isDeepSeekHarnessEnabled,
+  setAgentEngineEnabled,
+} from "../deepseekHarness/prefs";
 import { appLogger } from "../core/logging";
 import { createProviderRequestScope } from "../utils/providerTransport";
 import {
@@ -1573,6 +1577,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   ) as HTMLInputElement | null;
   const enableAgentModeInput = doc.querySelector(
     `#${config.addonRef}-enable-agent-mode`,
+  ) as HTMLInputElement | null;
+  const enableHarnessInput = doc.querySelector(
+    `#${config.addonRef}-enable-deepseek-harness`,
   ) as HTMLInputElement | null;
   const tavilyApiKeyInput = doc.querySelector(
     `#${config.addonRef}-tavily-api-key`,
@@ -3591,19 +3598,26 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     `#${config.addonRef}-claude-managed-instruction-status`,
   ) as HTMLSpanElement | null;
 
-  if (enableAgentModeInput) {
-    const prefValue = Zotero.Prefs.get(
+  const syncAgentEngineSwitches = () => {
+    const value = Zotero.Prefs.get(
       `${config.prefsPrefix}.enableAgentMode`,
       true,
     );
-    enableAgentModeInput.checked =
-      prefValue === true || `${prefValue || ""}`.toLowerCase() === "true";
-    enableAgentModeInput.addEventListener("change", () => {
-      Zotero.Prefs.set(
-        `${config.prefsPrefix}.enableAgentMode`,
-        enableAgentModeInput.checked,
-        true,
-      );
+    const enabled = value === true || `${value || ""}`.toLowerCase() === "true";
+    const harness = isDeepSeekHarnessEnabled();
+    if (enableAgentModeInput)
+      enableAgentModeInput.checked = enabled && !harness;
+    if (enableHarnessInput) enableHarnessInput.checked = enabled && harness;
+  };
+  syncAgentEngineSwitches();
+  for (const [input, engine] of [
+    [enableAgentModeInput, "builtin"],
+    [enableHarnessInput, "deepseek_harness"],
+  ] as const) {
+    input?.addEventListener("change", () => {
+      setAgentEngineEnabled(engine, input.checked);
+      syncAgentEngineSwitches();
+      refreshAgentRowSummaries();
     });
   }
 
@@ -3947,6 +3961,20 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             tavilyApiKeyInput?.value.trim()
               ? t("Web search on")
               : t("Web search off"),
+          ]
+        : [t("Off")],
+    );
+    const harnessOn = !!enableHarnessInput?.checked;
+    setAgentRowSummary(
+      "harness",
+      harnessOn,
+      harnessOn
+        ? [
+            selectedOptionLabel(originalAgentPermissionModeSelect),
+            inputValue("deepseek-harness-node-path") &&
+            inputValue("deepseek-harness-worker-path")
+              ? t("Configured")
+              : t("Setup required"),
           ]
         : [t("Off")],
     );
@@ -4898,31 +4926,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     }
   }
 
-  const executionEngine = doc.querySelector(
-    `#${config.addonRef}-agent-execution-engine`,
-  ) as HTMLSelectElement | null;
-  const harnessSettings = doc.querySelector(
-    `#${config.addonRef}-deepseek-harness-settings`,
-  ) as HTMLElement | null;
-  if (executionEngine) {
-    executionEngine.value =
-      getHarnessPreference("agentExecutionEngine") === "deepseek_harness"
-        ? "deepseek_harness"
-        : "builtin";
-    const syncHarnessSettings = () => {
-      if (harnessSettings)
-        harnessSettings.hidden = executionEngine.value !== "deepseek_harness";
-    };
-    syncHarnessSettings();
-    executionEngine.addEventListener("change", () => {
-      Zotero.Prefs.set(
-        `${config.prefsPrefix}.agentExecutionEngine`,
-        executionEngine.value,
-        true,
-      );
-      syncHarnessSettings();
-    });
-  }
   for (const [id, pref] of [
     ["deepseek-harness-node-path", "deepseekHarnessNodePath"],
     ["deepseek-harness-worker-path", "deepseekHarnessWorkerPath"],
@@ -4960,6 +4963,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       selectedKey: `original:${getOriginalAgentPermissionMode()}`,
     });
     updateOriginalPermissionDescription();
+    refreshAgentRowSummaries();
     observePermissionPreference(
       `${config.prefsPrefix}.originalAgentPermissionMode`,
       () => {
