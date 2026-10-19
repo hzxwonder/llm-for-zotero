@@ -7,7 +7,11 @@ import type {
   AgentToolContext,
 } from "../agent/types";
 import type { AgentActionReceipt } from "../agent/contracts/types";
-import { buildAgentInitialMessages } from "../agent/model/messageBuilder";
+import {
+  buildAgentInitialMessages,
+  normalizeHistoryMessages,
+} from "../agent/model/messageBuilder";
+import { getConversationKeyLedgerEntry } from "../shared/conversationKeyLedger";
 import { resolveRequestProviderProtocol } from "../agent/model/factory";
 import { resolveAgentOutputRequestPolicy } from "../agent/model/limits";
 import { buildAgentModelCapabilities } from "../agent/model/contentCapabilities";
@@ -258,9 +262,27 @@ async function runTurn(
       request,
       "openai_chat_compat",
     );
+    const identity = await getConversationKeyLedgerEntry(key);
+    if (!identity || identity.retiredAt)
+      throw new Error("Harness requires an active conversation identity");
+    const profileDirectory = String(
+      (Zotero as typeof Zotero & { Profile?: { dir?: string } }).Profile?.dir ||
+        "",
+    );
+    if (!profileDirectory)
+      throw new Error("Zotero profile directory is unavailable");
     const result = await runHarnessProcess(
       {
         model: request.model,
+        session: {
+          root: `${profileDirectory}/llm-for-zotero/harness`,
+          key: `${identity.instanceID}:${identity.conversationID}:${request.conversationGeneration || 0}`,
+          userText: request.userText,
+          history: normalizeHistoryMessages(request).map((message) => ({
+            role: message.role as "user" | "assistant",
+            content: text(message.content),
+          })),
+        },
         contextWindow: resolveModelInputTokenLimit(
           request.model,
           request.advanced?.inputTokenCap,

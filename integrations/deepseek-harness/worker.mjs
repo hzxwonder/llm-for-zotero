@@ -18,6 +18,11 @@ import Sessions from "@deepseek-ai/dsh-session";
 import Projections from "@deepseek-ai/dsh-session-projection";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import Tools from "@deepseek-ai/dsh-tools";
+import Persistence from "@deepseek-ai/dsh-session-persistence-jsonl";
+import * as Retry from "@deepseek-ai/dsh-llm-retry";
+import { DurableConversation } from "./durable.mjs";
+
+process.umask(0o077);
 
 // Private, newline-delimited RPC over the owning Zotero process's pipes.
 // The worker loads the agent kernel and proxies the registered Zotero tools.
@@ -30,6 +35,9 @@ let running = false;
 let cancelled = false;
 let nextId = 0;
 let apiKey = "";
+let durable;
+let checkpointing = false;
+let activeRun;
 
 const send = (message) =>
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
@@ -100,6 +108,10 @@ async function initialize(config) {
   await context.plugin(Llm);
   await context.plugin(Sessions);
   await context.plugin(Projections);
+  if (config.session) {
+    durable = new DurableConversation(config);
+    await context.plugin(Persistence, { root: durable.root });
+  }
   await context.plugin(SystemPrompt, {
     includeHarnessIdentity: false,
     includeRuntimeContext: false,
@@ -121,7 +133,15 @@ async function initialize(config) {
           },
         ],
         compat: { supportsStore: false },
-        retryPolicy: { mode: "normal", maxRetries: 0 },
+        retryPolicy: {
+          mode: "normal",
+          maxRetries: 3,
+          backoff: {
+            initialDelayMs: 1000,
+            maxDelayMs: 10000,
+            jitterRatio: 0.2,
+          },
+        },
       },
     },
   });
@@ -135,7 +155,13 @@ async function initialize(config) {
         render: (_args, value) => [{ type: "text", text: value }],
       },
       async execute(args, execution) {
-        const result = await callHost(tool.name, args, execution.signal);
+        await context.sessions.flush(agent.session);
+        const dispatch = () => callHost(tool.name, args, execution.signal);
+        const result = durable
+          ? await durable.execute(tool, args, dispatch, (text) =>
+              event({ type: "status", text }),
+            )
+          : await dispatch();
         if (!result.ok) throw new Error(JSON.stringify(result));
         return JSON.stringify(result);
       },
@@ -150,84 +176,116 @@ async function initialize(config) {
     maxOverflowRetries: 1,
   });
   await context.plugin(AgentLoop, { agents: [], maxParallelToolCalls: 1 });
+  await context.plugin(Retry);
   if (Number.isFinite(config.temperature)) {
     context.on("agent/request", async (_payload, next) => ({
       ...(await next()),
       temperature: config.temperature,
     }));
   }
-  const handle = await context.agents.create({
-    sessionId: `zotero-${randomUUID()}`,
-    agentOptions: {
-      provider: "zotero-provider",
-      model: config.model,
-      maxTokens,
-    },
-  });
-  agent = handle.agent;
-  agent.session.append(
-    "system/message",
-    {
-      turn: 0,
-      step: 0,
-      message: createSystemMessage(config.systemPrompt || ""),
-    },
-    { surfaceOp: "append" },
-  );
-  let historyStep = 0;
-  for (const message of config.history || []) {
-    if (
-      !message ||
-      !["user", "assistant"].includes(message.role) ||
-      typeof message.content !== "string"
-    )
-      throw new Error("Invalid text history");
-    const content = [{ type: "text", text: message.content }];
-    if (message.role === "user") {
-      agent.session.append(
-        "user/message",
-        createUserMessage({ content, source: { kind: "user" } }),
-        { surfaceOp: "append" },
-      );
-    } else {
-      const step = historyStep++;
-      agent.session.append("step/start", { turn: 0, step });
-      agent.session.append(
-        "assistant/message",
-        {
-          turn: 0,
-          step,
-          message: createAssistantMessage({
-            content,
-            source: { provider: "zotero-provider", model: config.model },
-          }),
-          stream: [],
-        },
-        { surfaceOp: "append" },
-      );
-      agent.session.append("step/end", { turn: 0, step });
+  const agentOptions = {
+    provider: "zotero-provider",
+    model: config.model,
+    maxTokens,
+  };
+  const existing =
+    durable &&
+    (await context.sessionPersistence.stat(durable.binding.sessionId));
+  const seed = [];
+  const append = (type, data, options = {}) =>
+    seed.push({ type, data, seq: seed.length, time: Date.now(), ...options });
+  if (!existing) {
+    append("turn/start", { turn: 1 });
+    append("step/start", { turn: 1, step: 1 });
+    append(
+      "system/message",
+      {
+        turn: 1,
+        step: 1,
+        message: createSystemMessage(config.systemPrompt || ""),
+      },
+      { surfaceOp: "append" },
+    );
+    append("step/end", { turn: 1, step: 1 });
+    let historyStep = 2;
+    for (const message of config.history || []) {
+      if (
+        !message ||
+        !["user", "assistant"].includes(message.role) ||
+        typeof message.content !== "string"
+      )
+        throw new Error("Invalid text history");
+      const content = [{ type: "text", text: message.content }];
+      if (message.role === "user") {
+        append(
+          "user/message",
+          createUserMessage({ content, source: { kind: "user" } }),
+          { surfaceOp: "append" },
+        );
+      } else {
+        const step = historyStep++;
+        append("step/start", { turn: 1, step });
+        append(
+          "assistant/message",
+          {
+            turn: 1,
+            step,
+            message: createAssistantMessage({
+              content,
+              source: { provider: "zotero-provider", model: config.model },
+            }),
+            stream: [],
+          },
+          { surfaceOp: "append" },
+        );
+        append("step/end", { turn: 1, step });
+      }
     }
+    // The pre-step pressure check also applies to imported Zotero history.
+    append("request/header", {
+      header: {
+        config: { provider: "zotero-provider", model: config.model, maxTokens },
+        ...(config.tools.length
+          ? {
+              tools: config.tools.map((tool) => ({
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.inputSchema,
+              })),
+            }
+          : {}),
+      },
+      reason: "initial",
+    });
+    append("turn/end", { turn: 1, reason: { kind: "completed" } });
   }
-  // The pre-step pressure check also applies to imported Zotero history.
-  agent.session.append("request/header", {
-    header: {
-      config: { provider: "zotero-provider", model: config.model, maxTokens },
-      tools: config.tools.map((tool) => ({
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.inputSchema,
-      })),
-    },
-    reason: "initial",
-  });
+  const handle = existing
+    ? await context.agents.resume({
+        resumeSessionId: durable.binding.sessionId,
+        agentOptions,
+      })
+    : await context.agents.create({
+        sessionId: durable?.binding.sessionId || `zotero-${randomUUID()}`,
+        agentOptions,
+        seed,
+      });
+  agent = handle.agent;
+  await context.sessions.flush(agent.session);
+  durable?.commit();
+  if (existing)
+    event({
+      type: "status",
+      text: `Resumed Harness session ${agent.id}; completed tool results and compaction history restored`,
+    });
   initialized = true;
   return { version: "0.2.0-rc.2", sessionId: agent.id };
 }
 
-async function run(text) {
+async function run(text, resume = false) {
   if (!initialized || running || typeof text !== "string")
     throw new Error("Invalid run request");
   running = true;
+  durable?.finish("running");
   let finalText = "";
   let failure;
   let stopReason;
@@ -289,6 +347,11 @@ async function run(text) {
         if (entry.type === "tool/result" && entry.surfaceOp?.op === "replace")
           event({ type: "status", text: "Trimmed a large tool result" });
         if (entry.type === "turn/end") stopReason = entry.data.reason;
+        if (entry.type === "llm/retry")
+          event({
+            type: "status",
+            text: `Retrying model request (${entry.data.retry}/${entry.data.maxRetries}) after ${entry.data.failure.code}`,
+          });
       }),
     );
     await new Promise((resolve) => {
@@ -300,7 +363,15 @@ async function run(text) {
       });
       agent.followup(
         createUserMessage({
-          content: [{ type: "text", text }],
+          content: [
+            {
+              type: "text",
+              text:
+                resume || durable?.recovering
+                  ? `${text}\n\nContinue from this session's completed steps and tool results. Do not repeat completed reads or effects. Inspect targets for any unconfirmed tool outcome before proposing a write.`
+                  : text,
+            },
+          ],
           source: { kind: "user" },
         }),
       );
@@ -310,9 +381,14 @@ async function run(text) {
     if (stopReason && stopReason.kind !== "completed")
       throw new Error(`Harness turn ended: ${JSON.stringify(stopReason)}`);
     if (!finalText.trim()) throw new Error("Harness returned no answer");
-    return { text: finalText };
+    durable?.finish("completed");
+    return { text: finalText, sessionId: agent.id };
   } finally {
+    if (durable && durable.binding.status !== "completed")
+      durable.finish("interrupted");
+    await context.sessions.flush(agent.session);
     for (const dispose of disposers) dispose();
+    running = false;
   }
 }
 
@@ -333,8 +409,24 @@ input.on("line", (line) => {
       if (message.method === "initialize")
         result = await initialize(message.params);
       else if (message.method === "run")
-        result = await run(message.params?.text);
-      else if (message.method === "cancel") {
+        result = await (activeRun = run(
+          message.params?.text,
+          message.params?.resume,
+        ));
+      else if (message.method === "checkpoint") {
+        if (checkpointing) throw new Error("Checkpoint already in progress");
+        checkpointing = true;
+        try {
+          agent.cancel({ kind: "user" });
+          await agent.whenIdle();
+          await activeRun?.catch(() => undefined);
+          await context.sessions.flush(agent.session);
+          durable?.recover();
+          result = { sessionId: agent.id };
+        } finally {
+          checkpointing = false;
+        }
+      } else if (message.method === "cancel") {
         cancelled = true;
         agent?.cancel({ kind: "user" });
         return;

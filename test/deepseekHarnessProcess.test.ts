@@ -109,6 +109,11 @@ describe("Harness model-time budget", function () {
                 JSON.stringify({ id: message.id, result: {} }) + "\n",
               );
             if (message.method === "run") runId = message.id;
+            if (message.method === "checkpoint")
+              stdout.push(
+                JSON.stringify({ id: message.id, result: { saved: true } }) +
+                  "\n",
+              );
           },
           close: async () => {
             stdout.push("");
@@ -128,7 +133,7 @@ describe("Harness model-time budget", function () {
     Date.now = realNow;
   });
 
-  it("keeps a question pending beyond ten minutes and resumes with the remaining budget", async function () {
+  it("keeps a question pending beyond ten minutes and renews the model-step budget", async function () {
     const result = start();
     await flush();
     await tick(100000);
@@ -156,14 +161,44 @@ describe("Harness model-time budget", function () {
     assert.deepEqual(await result, { text: "completed" });
   });
 
-  it("still times out an unresponsive model", async function () {
+  it("checkpoints a timed-out step once and bounds the resumed attempt", async function () {
     const result = start().then(
       () => "unexpected success",
       (error: Error) => error.message,
     );
     await flush();
     await tick(600000);
+    await tick(600000);
     assert.equal(await result, "Harness run timed out");
+  });
+
+  it("renews the deadline when a model step completes", async function () {
+    const result = start();
+    await flush();
+    await tick(500000);
+    stdout.push(
+      JSON.stringify({ method: "event", params: { type: "usage", round: 1 } }) +
+        "\n",
+    );
+    await flush();
+    await tick(500000);
+    stdout.push(
+      JSON.stringify({ id: runId, result: { text: "completed" } }) + "\n",
+    );
+    assert.deepEqual(await result, { text: "completed" });
+  });
+
+  it("continues a checkpointed step without dispatching another host tool", async function () {
+    const result = start();
+    await flush();
+    const firstRun = runId;
+    await tick(600000);
+    assert.notEqual(runId, firstRun);
+    stdout.push(
+      JSON.stringify({ id: runId, result: { text: "resumed" } }) + "\n",
+    );
+    assert.deepEqual(await result, { text: "resumed" });
+    assert.equal(toolCalls, 0);
   });
 
   it("allows cancellation while a question waits", async function () {

@@ -7,6 +7,10 @@ import { once } from "node:events";
 import process from "node:process";
 import { URL, fileURLToPath } from "node:url";
 import { setTimeout, clearTimeout } from "node:timers";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DurableConversation } from "./durable.mjs";
 
 async function fixture(t, respond) {
   const requests = [];
@@ -18,38 +22,45 @@ async function fixture(t, respond) {
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
-  const child = spawn(process.execPath, [
-    fileURLToPath(new URL("./worker.mjs", import.meta.url)),
-  ]);
+  let child;
   let stderr = "";
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk;
-  });
   const pending = new Map();
   const events = [];
   let sequence = 0;
   let onTool = async () => ({ ok: true, content: { count: 7 } });
   const send = (value) =>
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...value }) + "\n");
-  createInterface({ input: child.stdout }).on("line", (line) => {
-    const message = JSON.parse(line);
-    if (message.method === "event") events.push(message.params);
-    else if (message.method === "tool_call") {
-      void onTool(message.params).then((result) =>
-        send({ id: message.id, result }),
-      );
-    } else {
-      const entry = pending.get(message.id);
-      if (!entry) return;
-      pending.delete(message.id);
-      if (message.error) entry.reject(new Error(message.error.message));
-      else entry.resolve(message.result);
-    }
-  });
-  child.on("exit", () => {
-    for (const entry of pending.values())
-      entry.reject(new Error(`Worker exited: ${stderr}`));
-  });
+  const launch = () => {
+    child = spawn(process.execPath, [
+      fileURLToPath(new URL("./worker.mjs", import.meta.url)),
+    ]);
+    const owner = child;
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    createInterface({ input: child.stdout }).on("line", (line) => {
+      const message = JSON.parse(line);
+      if (message.method === "event") events.push(message.params);
+      else if (message.method === "tool_call") {
+        void onTool(message.params).then((result) =>
+          owner.stdin.write(
+            JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\n",
+          ),
+        );
+      } else {
+        const entry = pending.get(message.id);
+        if (!entry) return;
+        pending.delete(message.id);
+        if (message.error) entry.reject(new Error(message.error.message));
+        else entry.resolve(message.result);
+      }
+    });
+    child.on("exit", () => {
+      for (const entry of pending.values())
+        entry.reject(new Error(`Worker exited: ${stderr}`));
+    });
+  };
+  launch();
   t.after(async () => {
     const exit = once(child, "exit");
     child.stdin.end();
@@ -91,6 +102,12 @@ async function fixture(t, respond) {
     configuration,
     setTool: (handler) => {
       onTool = handler;
+    },
+    restart: async () => {
+      const exited = once(child, "exit");
+      child.kill("SIGKILL");
+      await exited;
+      launch();
     },
   };
 }
@@ -619,5 +636,508 @@ test(
       JSON.stringify(f.requests[1].messages).includes("Archive checkpoint 0"),
     );
     assert(!f.events.some((e) => e.type === "context_compacted"));
+  },
+);
+
+function persistentConfig(t, f, text, history = []) {
+  const root = mkdtempSync(join(tmpdir(), "zotero-harness-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  return {
+    ...f.configuration,
+    turnText: text,
+    history,
+    tools: f.configuration.tools.map((tool) => ({
+      ...tool,
+      executionClass: "read",
+    })),
+    session: { root, key: "conversation-1", userText: text, history },
+  };
+}
+const toolDelta = (id = "read-1") => ({
+  tool_calls: [
+    {
+      index: 0,
+      id,
+      type: "function",
+      function: {
+        name: "library_search",
+        arguments: '{"query":"durable-secret-42"}',
+      },
+    },
+  ],
+});
+
+test(
+  "native resume restores tool results across worker processes without rereading",
+  { timeout: 20000 },
+  async (t) => {
+    const f = await fixture(t, (response, request, round) => {
+      if (round === 1) stream(response, toolDelta(), "tool_calls");
+      else {
+        assert(
+          request.messages.some(
+            (m) => m.role === "tool" && m.content.includes("durable-result-42"),
+          ),
+        );
+        stream(response, {
+          content:
+            round === 2 ? "First complete." : "Restored durable-result-42.",
+        });
+      }
+    });
+    let executed = 0;
+    f.setTool(async () => {
+      executed++;
+      return { ok: true, effect: "none", content: "durable-result-42" };
+    });
+    const config = persistentConfig(t, f, "Read once.");
+    const first = await f.request("initialize", config);
+    await f.request("run", { text: config.turnText });
+    await f.restart();
+    const history = [
+      { role: "user", content: config.turnText },
+      { role: "assistant", content: "First complete." },
+    ];
+    const second = await f.request("initialize", {
+      ...config,
+      history,
+      turnText: "What did you read?",
+      session: { ...config.session, history, userText: "What did you read?" },
+    });
+    assert.equal(second.sessionId, first.sessionId);
+    assert.match(
+      (await f.request("run", { text: "What did you read?" })).text,
+      /durable-result-42/,
+    );
+    assert.equal(executed, 1);
+  },
+);
+
+test(
+  "a crashed worker reuses an acknowledged write when the model requests it again",
+  { timeout: 20000 },
+  async (t) => {
+    let stalled;
+    const stalledRequest = new Promise((resolve) => {
+      stalled = resolve;
+    });
+    const f = await fixture(t, (response, _request, round) => {
+      if (round === 1 || round === 3)
+        stream(response, toolDelta(`call-${round}`), "tool_calls");
+      else if (round === 2) stalled();
+      else
+        stream(response, { content: "Recovered without a duplicate write." });
+    });
+    let executed = 0;
+    f.setTool(async () => {
+      executed++;
+      return { ok: true, effect: "applied", content: "written-once" };
+    });
+    const config = persistentConfig(t, f, "Write once.");
+    config.tools[0].executionClass = "external_effect";
+    const first = await f.request("initialize", config);
+    const interrupted = f
+      .request("run", { text: config.turnText })
+      .catch(() => undefined);
+    await stalledRequest;
+    await f.restart();
+    await interrupted;
+    const history = [{ role: "user", content: config.turnText }];
+    const second = await f.request("initialize", {
+      ...config,
+      history,
+      turnText: "继续",
+      session: { ...config.session, history, userText: "继续" },
+    });
+    assert.equal(second.sessionId, first.sessionId);
+    await f.request("run", { text: "继续" });
+    assert.equal(executed, 1);
+    assert(
+      f.events.some((e) => e.text?.includes("Reused completed tool result")),
+    );
+  },
+);
+
+test(
+  "crash before a write acknowledgement blocks automatic re-execution",
+  { timeout: 20000 },
+  async (t) => {
+    let dispatched;
+    const sent = new Promise((resolve) => {
+      dispatched = resolve;
+    });
+    const f = await fixture(t, (response, _request, round) => {
+      if (round <= 2)
+        stream(response, toolDelta(`uncertain-${round}`), "tool_calls");
+      else stream(response, { content: "Inspect the target before writing." });
+    });
+    let executed = 0;
+    f.setTool(async () => {
+      executed++;
+      dispatched();
+      return new Promise(() => {});
+    });
+    const config = persistentConfig(t, f, "Write once.");
+    config.tools[0].executionClass = "external_effect";
+    await f.request("initialize", config);
+    const interrupted = f
+      .request("run", { text: config.turnText })
+      .catch(() => undefined);
+    await sent;
+    await f.restart();
+    await interrupted;
+    const history = [{ role: "user", content: config.turnText }];
+    await f.request("initialize", {
+      ...config,
+      history,
+      turnText: "继续",
+      session: { ...config.session, history, userText: "继续" },
+    });
+    await f.request("run", { text: "继续" });
+    assert.equal(executed, 1);
+    assert(
+      f.requests
+        .at(-1)
+        .messages.some(
+          (m) => m.role === "tool" && m.content.includes("unconfirmed"),
+        ),
+    );
+  },
+);
+
+test(
+  "checkpoint interrupts a stalled model and resumes the same live session",
+  { timeout: 20000 },
+  async (t) => {
+    let stalled;
+    const waiting = new Promise((resolve) => {
+      stalled = resolve;
+    });
+    const f = await fixture(t, (response, _request, round) => {
+      if (round === 1) stream(response, toolDelta(), "tool_calls");
+      else if (round === 2) stalled();
+      else stream(response, { content: "Continued after checkpoint." });
+    });
+    let executed = 0;
+    f.setTool(async () => {
+      executed++;
+      return { ok: true, effect: "none", content: "cached evidence" };
+    });
+    const config = persistentConfig(t, f, "Start.");
+    const session = await f.request("initialize", config);
+    const interrupted = f
+      .request("run", { text: "Start." })
+      .catch((e) => e.message);
+    await waiting;
+    assert.equal(
+      (await f.request("checkpoint", {})).sessionId,
+      session.sessionId,
+    );
+    await interrupted;
+    assert.equal(
+      (await f.request("run", { text: "Continue.", resume: true })).text,
+      "Continued after checkpoint.",
+    );
+    assert.equal(executed, 1);
+  },
+);
+
+for (const code of [429, 503])
+  test(
+    `transient HTTP ${code} retries the failed request without repeating its completed tool`,
+    { timeout: 20000 },
+    async (t) => {
+      const f = await fixture(t, (response, request, round) => {
+        if (round === 1) stream(response, toolDelta(), "tool_calls");
+        else if (round === 2) {
+          response.writeHead(code, { "Content-Type": "application/json" });
+          response.end(
+            JSON.stringify({
+              error: { message: "temporary provider failure" },
+            }),
+          );
+        } else {
+          assert(request.messages.some((m) => m.role === "tool"));
+          stream(response, { content: "Retry succeeded." });
+        }
+      });
+      let executed = 0;
+      f.setTool(async () => {
+        executed++;
+        return { ok: true, content: "done" };
+      });
+      await f.request("initialize", f.configuration);
+      assert.equal(
+        (await f.request("run", { text: "Start." })).text,
+        "Retry succeeded.",
+      );
+      assert.equal(executed, 1);
+      assert.equal(f.requests.length, 3);
+      assert(
+        f.events.some((e) => e.text?.includes("Retrying model request (1/3)")),
+      );
+    },
+  );
+
+test(
+  "transient failures stop after three retries",
+  { timeout: 20000 },
+  async (t) => {
+    const f = await fixture(t, (response) => {
+      response.writeHead(503, { "Content-Type": "application/json" });
+      response.end('{"error":{"message":"unavailable"}}');
+    });
+    await f.request("initialize", f.configuration);
+    await assert.rejects(
+      f.request("run", { text: "Start." }),
+      /unavailable|503/,
+    );
+    assert.equal(f.requests.length, 4);
+  },
+);
+
+test(
+  "cancellation during retry backoff stops further requests",
+  { timeout: 20000 },
+  async (t) => {
+    let notify;
+    const retry = new Promise((resolve) => {
+      notify = resolve;
+    });
+    const f = await fixture(t, (response) => {
+      response.writeHead(503, { "Content-Type": "application/json" });
+      response.end('{"error":{"message":"unavailable"}}');
+    });
+    await f.request("initialize", f.configuration);
+    const run = f.request("run", { text: "Start." }).catch((e) => e.message);
+    const poll = setInterval(() => {
+      if (f.events.some((e) => e.text?.includes("Retrying model request"))) {
+        clearInterval(poll);
+        notify();
+      }
+    }, 5);
+    t.after(() => clearInterval(poll));
+    await retry;
+    f.send({ method: "cancel" });
+    await run;
+    assert.equal(f.requests.length, 1);
+  },
+);
+
+test(
+  "imported chat history remains valid after persistence and native resume",
+  { timeout: 20000 },
+  async (t) => {
+    const f = await fixture(t, (response, request) => {
+      assert(
+        request.messages.some((m) => m.content?.includes?.("imported-marker")),
+      );
+      stream(response, { content: "ok" });
+    });
+    const history = [
+      { role: "user", content: "Remember imported-marker" },
+      { role: "assistant", content: "Remembered." },
+    ];
+    const config = persistentConfig(t, f, "Start.", history);
+    const first = await f.request("initialize", config);
+    await f.request("run", { text: "Start." });
+    await f.restart();
+    const next = [
+      ...history,
+      { role: "user", content: "Start." },
+      { role: "assistant", content: "ok" },
+    ];
+    const second = await f.request("initialize", {
+      ...config,
+      history: next,
+      turnText: "Continue?",
+      session: { ...config.session, history: next, userText: "Continue?" },
+    });
+    assert.equal(second.sessionId, first.sessionId);
+    await f.request("run", { text: "Continue?" });
+  },
+);
+
+test(
+  "conversation identity and edited user history start isolated sessions",
+  { timeout: 20000 },
+  async (t) => {
+    const f = await fixture(t, (response) =>
+      stream(response, { content: "ok" }),
+    );
+    const config = persistentConfig(t, f, "Original.");
+    const first = await f.request("initialize", config);
+    await f.request("run", { text: "Original." });
+    await f.restart();
+    const changed = [
+      { role: "user", content: "Edited question" },
+      { role: "assistant", content: "ok" },
+    ];
+    const second = await f.request("initialize", {
+      ...config,
+      history: changed,
+      turnText: "Continue?",
+      session: { ...config.session, history: changed, userText: "Continue?" },
+    });
+    assert.notEqual(second.sessionId, first.sessionId);
+    await f.request("run", { text: "Continue?" });
+    await f.restart();
+    const third = await f.request("initialize", {
+      ...config,
+      session: { ...config.session, key: "different-conversation" },
+    });
+    assert.notEqual(third.sessionId, first.sessionId);
+    await f.request("run", { text: "Original." });
+  },
+);
+
+test(
+  "compacted context survives a cold native resume",
+  { timeout: 20000 },
+  async (t) => {
+    const f = await fixture(t, (response, request) =>
+      stream(response, {
+        content: isSummary(request) ? checkpoint : "KEY-42 preserved.",
+      }),
+    );
+    const history = longHistory();
+    const config = {
+      ...persistentConfig(t, f, "Recall.", history),
+      contextWindow: 4096,
+      maxTokens: 512,
+    };
+    const first = await f.request("initialize", config);
+    await f.request("run", { text: "Recall." });
+    assert(f.events.some((e) => e.type === "context_compacted"));
+    await f.restart();
+    const next = [
+      ...history,
+      { role: "user", content: "Recall." },
+      { role: "assistant", content: "KEY-42 preserved." },
+    ];
+    const second = await f.request("initialize", {
+      ...config,
+      history: next,
+      turnText: "Again?",
+      session: { ...config.session, history: next, userText: "Again?" },
+    });
+    assert.equal(first.sessionId, second.sessionId);
+    await f.request("run", { text: "Again?" });
+    assert(JSON.stringify(f.requests.at(-1).messages).includes("KEY-42"));
+    assert(
+      !JSON.stringify(f.requests.at(-1).messages).includes(
+        "Archive checkpoint 0",
+      ),
+    );
+  },
+);
+
+test(
+  "recovery reuses a completed read with enriched turn context and a new instruction can repeat it",
+  { timeout: 20000 },
+  async (t) => {
+    let stalled;
+    const waiting = new Promise((resolve) => (stalled = resolve));
+    const f = await fixture(t, (response, _request, round) => {
+      if ([1, 3, 5].includes(round))
+        stream(response, toolDelta(`call-${round}`), "tool_calls");
+      else if (round === 2) stalled();
+      else stream(response, { content: "ok" });
+    });
+    let executed = 0;
+    f.setTool(async () => {
+      executed++;
+      return { ok: true, effect: "none", content: "evidence" };
+    });
+    const config = persistentConfig(t, f, "Read.");
+    await f.request("initialize", config);
+    const interrupted = f
+      .request("run", { text: "Read." })
+      .catch(() => undefined);
+    await waiting;
+    await f.restart();
+    await interrupted;
+    const history = [{ role: "user", content: "Read." }];
+    await f.request("initialize", {
+      ...config,
+      history,
+      turnText: "Current PDF context\n继续",
+      session: { ...config.session, history, userText: "继续" },
+    });
+    await f.request("run", { text: "Current PDF context\n继续" });
+    assert.equal(executed, 1);
+    await f.restart();
+    const next = [
+      ...history,
+      { role: "user", content: "继续" },
+      { role: "assistant", content: "ok" },
+    ];
+    await f.request("initialize", {
+      ...config,
+      history: next,
+      turnText: "Refresh now.",
+      session: { ...config.session, history: next, userText: "Refresh now." },
+    });
+    await f.request("run", { text: "Refresh now." });
+    assert.equal(executed, 2);
+  },
+);
+
+for (const code of [400, 401, 403])
+  test(
+    `HTTP ${code} is not automatically retried`,
+    { timeout: 20000 },
+    async (t) => {
+      const f = await fixture(t, (response) => {
+        response.writeHead(code, { "Content-Type": "application/json" });
+        response.end('{"error":{"message":"request denied"}}');
+      });
+      await f.request("initialize", { ...f.configuration, tools: [] });
+      await assert.rejects(f.request("run", { text: "Start." }));
+      assert.equal(f.requests.length, 1);
+    },
+  );
+
+test("recovery retains acknowledged commands when later writes invalidate read caches", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "harness-journal-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const durable = new DurableConversation({
+    apiBase: "http://fixture",
+    model: "fixture",
+    apiKey: "fixture-secret",
+    turnText: "Start.",
+    session: { root, key: "commands" },
+  });
+  const tool = { name: "run_command", executionClass: "external_effect" };
+  let calls = 0;
+  const dispatch = async () => {
+    calls++;
+    return { ok: true, effect: "none", content: "command acknowledged" };
+  };
+  await durable.execute(tool, { command: "first" }, dispatch, () => {});
+  durable.recover();
+  await durable.execute(
+    tool,
+    { command: "second" },
+    async () => ({ ok: true, effect: "applied", content: "second write" }),
+    () => {},
+  );
+  await durable.execute(tool, { command: "first" }, dispatch, () => {});
+  assert.equal(calls, 1);
+});
+
+test(
+  "quota exhaustion is not retried as a transient rate limit",
+  { timeout: 20000 },
+  async (t) => {
+    const f = await fixture(t, (response) => {
+      response.writeHead(429, { "Content-Type": "application/json" });
+      response.end(
+        '{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","code":"insufficient_quota"}}',
+      );
+    });
+    await f.request("initialize", f.configuration);
+    await assert.rejects(f.request("run", { text: "Start." }));
+    assert.equal(f.requests.length, 1);
   },
 );
