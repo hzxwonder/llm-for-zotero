@@ -3,6 +3,9 @@ import process from "node:process";
 import { URL } from "node:url";
 import { randomUUID } from "node:crypto";
 import { Context } from "@deepseek-ai/cordis";
+import Compaction from "@deepseek-ai/dsh-compaction-basic";
+import ToolResultPruner from "@deepseek-ai/dsh-compaction-tool-result-pruner";
+import TokenMeter from "@deepseek-ai/dsh-token-meter";
 import Agents from "@deepseek-ai/dsh-agent";
 import AgentLoop from "@deepseek-ai/dsh-agent-loop";
 import Llm, {
@@ -67,6 +70,23 @@ async function initialize(config) {
     !Array.isArray(config.tools)
   )
     throw new Error("Invalid Harness configuration");
+  const contextWindow = config.contextWindow ?? 131072;
+  const maxTokens =
+    config.maxTokens ?? Math.min(8192, Math.floor(contextWindow / 4));
+  if (
+    !Number.isSafeInteger(contextWindow) ||
+    contextWindow <= 0 ||
+    !Number.isSafeInteger(maxTokens) ||
+    maxTokens <= 0 ||
+    maxTokens >= contextWindow
+  )
+    throw new Error(
+      `Expected positive token limits with output below context capacity (context: ${contextWindow}, output: ${maxTokens})`,
+    );
+  const headroomTokens = Math.min(
+    8192,
+    Math.floor((contextWindow - maxTokens) / 8),
+  );
   const url = new URL(config.apiBase);
   if (
     !["http:", "https:"].includes(url.protocol) ||
@@ -96,8 +116,8 @@ async function initialize(config) {
         models: [
           {
             id: config.model,
-            contextWindow: config.contextWindow || 131072,
-            maxTokens: config.maxTokens || 8192,
+            contextWindow,
+            maxTokens,
           },
         ],
         compat: { supportsStore: false },
@@ -121,6 +141,14 @@ async function initialize(config) {
       },
     });
   }
+  await context.plugin(TokenMeter);
+  await context.plugin(ToolResultPruner);
+  await context.plugin(Compaction, {
+    auto: true,
+    headroomTokens,
+    maxTokens: Math.min(4096, maxTokens),
+    maxOverflowRetries: 1,
+  });
   await context.plugin(AgentLoop, { agents: [], maxParallelToolCalls: 1 });
   if (Number.isFinite(config.temperature)) {
     context.on("agent/request", async (_payload, next) => ({
@@ -133,7 +161,7 @@ async function initialize(config) {
     agentOptions: {
       provider: "zotero-provider",
       model: config.model,
-      maxTokens: config.maxTokens || 8192,
+      maxTokens,
     },
   });
   agent = handle.agent;
@@ -146,6 +174,7 @@ async function initialize(config) {
     },
     { surfaceOp: "append" },
   );
+  let historyStep = 0;
   for (const message of config.history || []) {
     if (
       !message ||
@@ -161,11 +190,13 @@ async function initialize(config) {
         { surfaceOp: "append" },
       );
     } else {
+      const step = historyStep++;
+      agent.session.append("step/start", { turn: 0, step });
       agent.session.append(
         "assistant/message",
         {
           turn: 0,
-          step: 0,
+          step,
           message: createAssistantMessage({
             content,
             source: { provider: "zotero-provider", model: config.model },
@@ -174,8 +205,21 @@ async function initialize(config) {
         },
         { surfaceOp: "append" },
       );
+      agent.session.append("step/end", { turn: 0, step });
     }
   }
+  // The pre-step pressure check also applies to imported Zotero history.
+  agent.session.append("request/header", {
+    header: {
+      config: { provider: "zotero-provider", model: config.model, maxTokens },
+      tools: config.tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema,
+      })),
+    },
+    reason: "initial",
+  });
   initialized = true;
   return { version: "0.2.0-rc.2", sessionId: agent.id };
 }
@@ -188,6 +232,25 @@ async function run(text) {
   let failure;
   let stopReason;
   const disposers = [];
+  let usageSequence = 0;
+  const reportUsage = (usage) =>
+    event({
+      type: "usage",
+      round: ++usageSequence,
+      promptTokens:
+        usage.inputTokens +
+        (usage.cacheReadTokens || 0) +
+        (usage.cacheWriteTokens || 0),
+      completionTokens: usage.outputTokens,
+      totalTokens:
+        usage.totalTokens ??
+        usage.inputTokens +
+          (usage.cacheReadTokens || 0) +
+          (usage.cacheWriteTokens || 0) +
+          usage.outputTokens,
+      cacheReadTokens: usage.cacheReadTokens,
+      cacheWriteTokens: usage.cacheWriteTokens,
+    });
   try {
     disposers.push(
       context.on("agent/assistant-stream", ({ frame }) => {
@@ -201,24 +264,7 @@ async function run(text) {
             round: frame.revision,
             details: chunk.text,
           });
-        if (chunk.type === "usage")
-          event({
-            type: "usage",
-            round: frame.revision,
-            promptTokens:
-              chunk.usage.inputTokens +
-              (chunk.usage.cacheReadTokens || 0) +
-              (chunk.usage.cacheWriteTokens || 0),
-            completionTokens: chunk.usage.outputTokens,
-            totalTokens:
-              chunk.usage.totalTokens ??
-              chunk.usage.inputTokens +
-                (chunk.usage.cacheReadTokens || 0) +
-                (chunk.usage.cacheWriteTokens || 0) +
-                chunk.usage.outputTokens,
-            cacheReadTokens: chunk.usage.cacheReadTokens,
-            cacheWriteTokens: chunk.usage.cacheWriteTokens,
-          });
+        if (chunk.type === "usage") reportUsage(chunk.usage);
       }),
     );
     disposers.push(
@@ -234,6 +280,14 @@ async function run(text) {
             .map((block) => block.text)
             .join("");
         }
+        if (entry.type === "compaction/start")
+          event({ type: "status", text: "Compacting context" });
+        if (entry.type === "compaction/summary" && entry.data.usage)
+          reportUsage(entry.data.usage);
+        if (entry.type === "compaction/end" && !entry.data.error)
+          event({ type: "context_compacted", automatic: true });
+        if (entry.type === "tool/result" && entry.surfaceOp?.op === "replace")
+          event({ type: "status", text: "Trimmed a large tool result" });
         if (entry.type === "turn/end") stopReason = entry.data.reason;
       }),
     );

@@ -83,6 +83,7 @@ async function fixture(t, respond) {
     ],
   };
   return {
+    diagnostics: () => stderr,
     request,
     send,
     requests,
@@ -261,5 +262,362 @@ test(
       assert(!error.message.includes("fixture-secret"));
       return true;
     });
+  },
+);
+
+const isSummary = (request) =>
+  JSON.stringify(request.messages.at(-1)).includes(
+    "acting as a compaction engine",
+  );
+const longHistory = () =>
+  Array.from({ length: 24 }, (_, i) => ({
+    role: i % 2 ? "assistant" : "user",
+    content:
+      `Archive checkpoint ${i}. Preserve KEY-42 and /vault/paper.md. ` +
+      "Earlier research discussion with details. ".repeat(100),
+  }));
+const checkpoint =
+  "## Goal\nPreserve KEY-42 and /vault/paper.md. Continue the current user task. Earlier work is complete.";
+const overflow = (response) => {
+  response.writeHead(400, { "Content-Type": "application/json" });
+  response.end(
+    JSON.stringify({
+      error: {
+        message:
+          "This model's maximum context length is 4096 tokens. Your messages resulted in 9000 tokens.",
+        code: "context_length_exceeded",
+        type: "invalid_request_error",
+      },
+    }),
+  );
+};
+
+test(
+  "compacts imported history before the first answer and accounts for summary usage",
+  { timeout: 20000 },
+  async (t) => {
+    const f = await fixture(t, (response, request) =>
+      stream(response, {
+        content: isSummary(request) ? checkpoint : "KEY-42 preserved.",
+      }),
+    );
+    await f.request("initialize", {
+      ...f.configuration,
+      contextWindow: 4096,
+      maxTokens: 512,
+      history: longHistory(),
+    });
+    const result = await f.request("run", {
+      text: "CURRENT-TASK: recall the key.",
+    });
+    assert.equal(result.text, "KEY-42 preserved.");
+    assert(
+      isSummary(f.requests[0]),
+      "First request must summarize imported history: " + f.diagnostics(),
+    );
+    const answer = f.requests.at(-1);
+    assert(!isSummary(answer));
+    assert(JSON.stringify(answer.messages).includes("<compacted-summary>"));
+    assert(JSON.stringify(answer.messages).includes("CURRENT-TASK"));
+    assert(
+      answer.messages.some(
+        (m) =>
+          m.role === "system" && m.content.includes("Answer using the tools"),
+      ),
+    );
+    assert(
+      JSON.stringify(answer.messages).length <
+        JSON.stringify(f.requests[0].messages).length,
+    );
+    assert(f.events.some((e) => e.type === "context_compacted" && e.automatic));
+    const usage = f.events.filter((e) => e.type === "usage");
+    assert.equal(usage.length, f.requests.length);
+    assert.equal(new Set(usage.map((e) => e.round)).size, usage.length);
+    assert.equal(
+      f.events
+        .filter((e) => e.type === "message_delta")
+        .map((e) => e.text)
+        .join(""),
+      result.text,
+    );
+  },
+);
+
+test(
+  "trims a large tool result under pressure without repeating the host action",
+  { timeout: 20000 },
+  async (t) => {
+    const f = await fixture(t, (response, request, round) => {
+      if (round === 1)
+        stream(
+          response,
+          {
+            tool_calls: [
+              {
+                index: 0,
+                id: "large-result",
+                type: "function",
+                function: {
+                  name: "library_search",
+                  arguments: '{"query":"large"}',
+                },
+              },
+            ],
+          },
+          "tool_calls",
+        );
+      else
+        stream(response, {
+          content: isSummary(request)
+            ? checkpoint
+            : "Read the retained result.",
+        });
+    });
+    let calls = 0;
+    f.setTool(async () => {
+      calls++;
+      return {
+        ok: true,
+        content: {
+          text: "HEAD-KEY " + "verbose detail ".repeat(8000) + " TAIL-KEY",
+        },
+      };
+    });
+    await f.request("initialize", {
+      ...f.configuration,
+      contextWindow: 4096,
+      maxTokens: 512,
+    });
+    await f.request("run", { text: "Read once." });
+    assert.equal(calls, 1);
+    const retained = f.requests.at(-1).messages.find((m) => m.role === "tool");
+    assert(retained, "Tool call and result must remain paired");
+    assert(
+      retained.content.includes("HEAD-KEY") &&
+        retained.content.includes("TAIL-KEY"),
+    );
+    assert(retained.content.length < 8000);
+    assert(
+      f.events.some((e) => e.type === "status" && e.text.includes("Trimmed")),
+    );
+  },
+);
+
+test(
+  "recovers a provider overflow with one summary and a model retry",
+  { timeout: 20000 },
+  async (t) => {
+    const f = await fixture(t, (response, request, round) => {
+      if (round === 1) overflow(response);
+      else
+        stream(response, {
+          content: isSummary(request) ? checkpoint : "Recovered KEY-42.",
+        });
+    });
+    await f.request("initialize", {
+      ...f.configuration,
+      history: longHistory().slice(0, 4),
+    });
+    assert.equal(
+      (await f.request("run", { text: "Continue." })).text,
+      "Recovered KEY-42.",
+    );
+    assert.equal(f.requests.length, 3);
+    assert(isSummary(f.requests[1]));
+    assert(
+      JSON.stringify(f.requests[2].messages).includes("<compacted-summary>"),
+    );
+    assert(f.events.some((e) => e.type === "context_compacted"));
+  },
+);
+
+test(
+  "repeated context overflows stop after the recovery retry",
+  { timeout: 20000 },
+  async (t) => {
+    const f = await fixture(t, (response, request) =>
+      isSummary(request)
+        ? stream(response, { content: checkpoint })
+        : overflow(response),
+    );
+    await f.request("initialize", {
+      ...f.configuration,
+      history: longHistory().slice(0, 4),
+    });
+    await assert.rejects(
+      f.request("run", { text: "Continue." }),
+      /context|overflow/i,
+    );
+    assert.equal(f.requests.length, 3, f.diagnostics());
+  },
+);
+
+test(
+  "a failed summary preserves the provider error and does not retry the answer",
+  { timeout: 20000 },
+  async (t) => {
+    const f = await fixture(t, (response, request) => {
+      if (!isSummary(request)) return overflow(response);
+      response.writeHead(401, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify({
+          error: {
+            message: "Invalid fixture-secret",
+            type: "authentication_error",
+          },
+        }),
+      );
+    });
+    await f.request("initialize", {
+      ...f.configuration,
+      history: longHistory().slice(0, 4),
+    });
+    await assert.rejects(
+      f.request("run", { text: "Continue." }),
+      /context|overflow/i,
+    );
+    assert.equal(f.requests.length, 2);
+    assert(!f.events.some((e) => e.type === "context_compacted"));
+    assert(!JSON.stringify(f.events).includes("fixture-secret"));
+  },
+);
+
+test(
+  "cancel interrupts summarization and prevents answer requests and host calls",
+  { timeout: 20000 },
+  async (t) => {
+    let started;
+    const summarizing = new Promise((resolve) => {
+      started = resolve;
+    });
+    const f = await fixture(t, (response, request) => {
+      assert(isSummary(request));
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.write(": ready\n\n");
+      started();
+    });
+    let calls = 0;
+    f.setTool(async () => {
+      calls++;
+      return { ok: true };
+    });
+    await f.request("initialize", {
+      ...f.configuration,
+      contextWindow: 4096,
+      maxTokens: 512,
+      history: longHistory(),
+    });
+    const rejected = assert.rejects(
+      f.request("run", { text: "Continue." }),
+      /Cancelled/,
+    );
+    await summarizing;
+    f.send({ method: "cancel" });
+    await rejected;
+    assert.equal(f.requests.length, 1);
+    assert.equal(calls, 0);
+    assert(!f.events.some((e) => e.type === "context_compacted"));
+  },
+);
+
+test(
+  "rejects invalid context budgets before any provider request",
+  { timeout: 20000 },
+  async (t) => {
+    for (const contextWindow of [0, -1, 3.5, "4096", 512]) {
+      const f = await fixture(t, () =>
+        assert.fail("Invalid budget must not call the provider"),
+      );
+      await assert.rejects(
+        f.request("initialize", {
+          ...f.configuration,
+          contextWindow,
+          maxTokens: 512,
+        }),
+        /token limits/,
+      );
+      assert.equal(f.requests.length, 0);
+    }
+  },
+);
+
+test(
+  "overflow recovery after a tool call does not replay the host action",
+  { timeout: 20000 },
+  async (t) => {
+    const f = await fixture(t, (response, request, round) => {
+      if (round === 1)
+        stream(
+          response,
+          {
+            tool_calls: [
+              {
+                index: 0,
+                id: "committed-action",
+                type: "function",
+                function: {
+                  name: "library_search",
+                  arguments: '{"query":"once"}',
+                },
+              },
+            ],
+          },
+          "tool_calls",
+        );
+      else if (round === 2) overflow(response);
+      else
+        stream(response, {
+          content: isSummary(request) ? checkpoint : "Action complete.",
+        });
+    });
+    let calls = 0;
+    f.setTool(async () => {
+      calls++;
+      return {
+        ok: true,
+        content: {
+          receipt: "DONE-ONCE",
+          details: "Completed operation details. ".repeat(100),
+        },
+      };
+    });
+    await f.request("initialize", {
+      ...f.configuration,
+      history: longHistory().slice(0, 2),
+    });
+    assert.equal(
+      (await f.request("run", { text: "Do the action once." })).text,
+      "Action complete.",
+    );
+    assert.equal(calls, 1);
+    assert.equal(f.requests.length, 4);
+    assert(f.events.some((e) => e.type === "context_compacted"));
+  },
+);
+
+test(
+  "a truncated proactive summary leaves the original history available",
+  { timeout: 20000 },
+  async (t) => {
+    const f = await fixture(t, (response, request) =>
+      isSummary(request)
+        ? stream(response, { content: "Incomplete checkpoint" }, "length")
+        : stream(response, { content: "Original history available." }),
+    );
+    await f.request("initialize", {
+      ...f.configuration,
+      contextWindow: 4096,
+      maxTokens: 512,
+      history: longHistory(),
+    });
+    assert.equal(
+      (await f.request("run", { text: "Continue." })).text,
+      "Original history available.",
+    );
+    assert.equal(f.requests.length, 2);
+    assert(
+      JSON.stringify(f.requests[1].messages).includes("Archive checkpoint 0"),
+    );
+    assert(!f.events.some((e) => e.type === "context_compacted"));
   },
 );

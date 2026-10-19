@@ -179,6 +179,53 @@ describe("DeepSeek Harness with the configured live provider", function () {
     report.push({ scenario: "history", passed: true });
   });
 
+  it("compacts a long imported conversation and continues with a real Zotero tool", async function () {
+    const history = Array.from({ length: 40 }, (_, index) => ({
+      role: index % 2 ? "assistant" : "user",
+      content:
+        `自动验收历史第 ${index} 段。验收口令为 HARNESS-COMPACT-73。` +
+        "This is synthetic background for testing automatic context compaction. Preserve the test passphrase and continue the current task. ".repeat(
+          40,
+        ),
+    }));
+    const { result, events } = await run(
+      `自动验收：回答历史中的验收口令，并调用 library_read 读取 itemId=${item.id} 的摘要，回答包含摘要英文原文。`,
+      false,
+      {
+        history,
+        advanced: {
+          inputTokenCap: 65536,
+          temperature: 0.2,
+          outputTokenLimit: { mode: "custom", tokens: 4096 },
+        },
+      },
+    );
+    assert.isTrue(
+      events.some(
+        (event) => event.type === "context_compacted" && event.automatic,
+      ),
+    );
+    assert.include(result.text, "HARNESS-COMPACT-73");
+    assert.include(result.text, "synthetic paper");
+    assert.isTrue(
+      events.some(
+        (event) => event.type === "tool_call" && event.name === "library_read",
+      ),
+    );
+    assert.isAtLeast(
+      events.filter((event) => event.type === "usage").length,
+      2,
+    );
+    const trace = await api.getRunTrace(result.runId);
+    assert.equal(trace.run.status, "completed");
+    report.push({
+      scenario: "automatic_compaction",
+      passed: true,
+      retainedPassphrase: true,
+      continuedToolRead: true,
+    });
+  });
+
   it("stops an active live turn", async function () {
     const controller = new AbortController();
     let sawStatus = false;

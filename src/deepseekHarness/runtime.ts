@@ -37,6 +37,7 @@ import {
 } from "../shared/conversationWriteFence";
 import { createAbortController } from "../utils/apiHelpers";
 import { createTurnUsageRecorder } from "../utils/usageTurnRecorder";
+import { resolveModelInputTokenLimit } from "../utils/modelInputCap";
 import { runHarnessProcess } from "./process";
 
 const activeTurns = new Map<number, () => void>();
@@ -260,6 +261,16 @@ async function runTurn(
     const result = await runHarnessProcess(
       {
         model: request.model,
+        contextWindow: resolveModelInputTokenLimit(
+          request.model,
+          request.advanced?.inputTokenCap,
+          {
+            apiBase: request.apiBase,
+            protocol: "openai_chat_compat",
+            authMode: request.authMode,
+            profileOverride: request.advanced?.profileOverride,
+          },
+        ).limitTokens,
         apiBase: request.apiBase,
         apiKey: request.apiKey,
         ...(outputPolicy.mode === "numeric"
@@ -292,7 +303,12 @@ async function runTurn(
             answer += event.text;
             context.currentAnswerText = answer;
             await emit(event);
-          } else if (event.type === "reasoning") await emit(event);
+          } else if (
+            event.type === "reasoning" ||
+            event.type === "status" ||
+            event.type === "context_compacted"
+          )
+            await emit(event);
           else if (event.type === "usage" && "round" in event) {
             usage.markDispatched();
             usage.record(event, { segment: event.round });

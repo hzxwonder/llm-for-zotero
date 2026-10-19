@@ -8,6 +8,7 @@ export type HarnessConfiguration = {
   systemPrompt: string;
   history: Array<{ role: "user" | "assistant"; content: string }>;
   tools: Array<{ name: string; description: string; inputSchema: object }>;
+  contextWindow: number;
   maxTokens?: number;
   temperature?: number;
 };
@@ -42,7 +43,12 @@ export async function runHarnessProcess(
   });
   const pending = new Map<
     number,
-    { resolve: (value: any) => void; reject: (error: Error) => void }
+    {
+      resolve: (value: any) => void;
+      reject: (error: Error) => void;
+      pause: () => void;
+      resume: () => void;
+    }
   >();
   const hostTasks = new Set<Promise<void>>();
   let sequence = 0;
@@ -65,11 +71,26 @@ export async function runHarnessProcess(
     if (stopped) return Promise.reject(new Error("Harness process closed"));
     const id = ++sequence;
     return new Promise<any>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pending.delete(id);
-        reject(new Error(`Harness ${method} timed out`));
-      }, timeout);
+      let remaining = timeout;
+      let startedAt = 0;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const pause = () => {
+        if (timer === undefined) return;
+        clearTimeout(timer);
+        timer = undefined;
+        remaining = Math.max(0, remaining - (Date.now() - startedAt));
+      };
+      const resume = () => {
+        if (timer !== undefined || stopped) return;
+        startedAt = Date.now();
+        timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`Harness ${method} timed out`));
+        }, remaining);
+      };
       pending.set(id, {
+        pause,
+        resume,
         resolve: (value) => {
           clearTimeout(timer);
           resolve(value);
@@ -79,6 +100,7 @@ export async function runHarnessProcess(
           reject(error);
         },
       });
+      resume();
       void send({ id, method, params }).catch((error) => fail(error));
     });
   };
@@ -119,6 +141,8 @@ export async function runHarnessProcess(
             message.method === "tool_call" &&
             !options.signal.aborted
           ) {
+            // Host tools can wait for user input; only model time uses the run budget.
+            for (const entry of pending.values()) entry.pause();
             const task = (async () => {
               try {
                 const result = await options.onToolCall(message.params);
@@ -132,7 +156,11 @@ export async function runHarnessProcess(
             })();
             hostTasks.add(task);
             void task
-              .finally(() => hostTasks.delete(task))
+              .finally(() => {
+                hostTasks.delete(task);
+                if (!hostTasks.size)
+                  for (const entry of pending.values()) entry.resume();
+              })
               .catch((error) => fail(error));
           }
         }
