@@ -1,4 +1,5 @@
 import type {
+  AgentModelMessage,
   AgentToolContext,
   AgentToolDefinition,
   AgentToolInputValidation,
@@ -382,9 +383,26 @@ async function readConversation(
   input: ConversationSourceInput,
   context: AgentToolContext,
 ): Promise<unknown> {
-  const messages = (
-    await readAgentConversationMessages(context.request.conversationKey)
-  )
+  const stored = await readAgentConversationMessages(
+    context.request.conversationKey,
+  );
+  // External runtimes can have visible chat history without a stored transcript.
+  const visibleHistory = (context.request.history || [])
+    .filter(
+      (message) => message.role === "user" || message.role === "assistant",
+    )
+    .map((message, index) => ({
+      role: message.role,
+      content:
+        typeof message.content === "string"
+          ? message.content
+          : message.content
+              .filter((part) => part.type === "text")
+              .map((part) => (part as { text: string }).text)
+              .join("\n"),
+      messageId: `history-${index}`,
+    })) as AgentModelMessage[];
+  const messages = (stored.length ? stored : visibleHistory)
     .filter(
       (message) =>
         (message.role === "user" || message.role === "assistant") &&

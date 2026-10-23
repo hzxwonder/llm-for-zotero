@@ -164,6 +164,27 @@ describe("context_read", function () {
     assert.match(String(output.error), /No stored tool results/);
   });
 
+  it("reads the current turn's visible history when no transcript segment exists", async function () {
+    const ctx = context(27);
+    ctx.request.history = [
+      { role: "system", content: "Private runtime guidance" },
+      { role: "user", content: "Discussion marker: OBSIDIAN-DISCUSSION-7319" },
+      { role: "assistant", content: "A forty percent reduction." },
+    ];
+    const listed = await run({ source: "conversation" }, ctx);
+    assert.equal(listed.totalCount, 2);
+    const messages = listed.messages as Array<{ messageId: string }>;
+    const read = await run(
+      { source: "conversation", messageId: messages[1].messageId },
+      ctx,
+    );
+    assert.equal(read.text, "Discussion marker: OBSIDIAN-DISCUSSION-7319");
+    assert.equal(
+      (await run({ source: "conversation" }, context(28))).totalCount,
+      0,
+    );
+  });
+
   it("routes source:'conversation' without messageId to the message list", async function () {
     const messages: AgentModelMessage[] = [
       { role: "user", content: "First question", messageId: "user-0" },

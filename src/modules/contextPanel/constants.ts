@@ -89,6 +89,21 @@ export const ACTION_LAYOUT_MODEL_FULL_MAX_LINES = 3;
 export const CUSTOM_SHORTCUT_ID_PREFIX = "custom-shortcut";
 
 export const BUILTIN_SHORTCUT_FILES = [
+  {
+    id: "paper-quick-understanding",
+    label: "快速理解",
+    file: "paper-quick-understanding.txt",
+  },
+  {
+    id: "paper-mastery-archive",
+    label: "掌握测验与 Obsidian 归档",
+    file: "paper-mastery-archive.txt",
+  },
+  {
+    id: "paper-deep-reading",
+    label: "论文透视",
+    file: "paper-deep-reading.txt",
+  },
   { id: "summarize", label: "Summarize", file: "summarize.txt" },
   { id: "key-points", label: "Key Points", file: "key-points.txt" },
   { id: "methodology", label: "Methodology", file: "methodology.txt" },

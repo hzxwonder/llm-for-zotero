@@ -366,7 +366,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
 
       const earlyProfile = panel.selectedProfile;
       const codexNativeSkillText =
-        earlyProfile?.authMode === "codex_app_server"
+        earlyProfile?.authMode === "codex_app_server" || panel.isAgentMode
           ? resolveSkillDirectiveText(rawSubmittedText, getAllSkills())
           : { text: rawSubmittedText };
       const text = codexNativeSkillText.text;
@@ -513,6 +513,10 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         currentModelName: earlyModelName,
         isWebChat,
         useCodexAttachmentPolicy,
+        usePaperTools:
+          panel.isAgentMode &&
+          !panel.isCodexConversationSystem &&
+          !panel.isClaudeConversationSystem,
       });
       if (!requestIsActive()) return;
       if (!pdfInputs.ok) return;

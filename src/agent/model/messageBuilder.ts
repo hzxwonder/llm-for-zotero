@@ -10,6 +10,7 @@ import type {
   AgentToolDefinition,
   AgentUserMessage,
 } from "../types";
+import { buildPaperLearningContext } from "../paperLearning";
 import { AGENT_PERSONA_INSTRUCTIONS } from "./agentPersona";
 import {
   AGENT_MEMORY_QUESTION_EXCERPT_LENGTH,
@@ -670,7 +671,10 @@ export async function renderAgentPromptEnvelope(
     },
     {
       id: "notes-directory-config",
-      lines: [buildNotesDirectoryConfigSection()],
+      lines: [
+        buildNotesDirectoryConfigSection(),
+        await buildPaperLearningContext(),
+      ],
     },
   ];
   // The library overview is deliberately NOT a system section.

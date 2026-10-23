@@ -1,0 +1,1 @@
+$paper-quick-understanding 先核对当前论文身份并查找本地快读缓存，复用同一 PDF 的已完成材料。按当前模板完成播客式序、快速理解、故事类比和 Introduction 三列论证地图。先 publish 独立本地快照，再交付标准 Markdown 正文；笔记专属内容仅存笔记稿。

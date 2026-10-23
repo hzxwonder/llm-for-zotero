@@ -90,6 +90,35 @@ describe("pdfPaperModelInputController", function () {
     assert.deepEqual(result.pdfUploadSystemMessages, []);
   });
 
+  it("keeps Agent library PDFs available to tools without provider upload or conversion", async function () {
+    const unexpected = async (): Promise<never> => {
+      throw new Error("PDF must be read lazily by tools");
+    };
+    const deps = createDeps({
+      getModelPdfSupport: () => "none",
+      resolvePdfPaperAttachments: unexpected,
+      resolveLocalPdfResources: unexpected,
+      renderPdfPagesAsImages: unexpected,
+      uploadPdfForProvider: unexpected,
+      resolvePdfBytes: unexpected,
+    });
+    const result = await resolvePdfModeModelInputs({
+      deps,
+      paperContexts: [paperContext],
+      selectedBaseFiles: [],
+      selectedImageCountForBudget: 0,
+      profile: { model: "deepseek-flash", authMode: "api_key" },
+      currentModelName: "deepseek-flash",
+      usePaperTools: true,
+    });
+    assert.isTrue(result.ok);
+    if (!result.ok) return;
+    assert.deepEqual(result.modelFiles, []);
+    assert.deepEqual(result.localDocuments, []);
+    assert.deepEqual(result.pdfPageImageDataUrls, []);
+    assert.deepEqual(result.pdfUploadSystemMessages, []);
+  });
+
   it("blocks PDF-mode papers for non-native providers", async function () {
     const deps = createDeps({ getModelPdfSupport: () => "none" });
 

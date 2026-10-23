@@ -2070,6 +2070,19 @@ describe("sendFlowController", function () {
     assert.equal(lastSend.lastSentModelProviderLabel, "Codex");
   });
 
+  it("loads a template's explicit skill in plugin Agent mode", async function () {
+    setUserSkills([makeTestSkill("paper-study")]);
+    const { controller, inputBox, getLastSend } = createBaseDeps({
+      isAgentMode: () => true,
+      getSelectedFiles: () => [],
+      getSelectedImages: () => [],
+      resolvePromptText: (text: string) => text,
+    });
+    inputBox.value = "$paper-study\n\nExplain this paper.";
+    await controller.doSend();
+    assert.deepEqual(getLastSend().lastSentForcedSkillIds, ["paper-study"]);
+  });
+
   async function sendCodexNativeSkillInput(
     input: string,
     skills: AgentSkill[],
@@ -2283,7 +2296,7 @@ describe("sendFlowController", function () {
     assert.isUndefined(manual.lastSentForcedSkillIds);
   });
 
-  it("keeps slash skill text unchanged outside Codex app-server mode", async function () {
+  it("keeps slash skill text unchanged in chat mode", async function () {
     setUserSkills([makeTestSkill("write-note")]);
     const { controller, inputBox, getLastSend } = createBaseDeps({
       getSelectedTextContextEntries: () => [],
@@ -2291,7 +2304,7 @@ describe("sendFlowController", function () {
       getFullTextPaperContexts: () => [],
       getSelectedFiles: () => [],
       getSelectedImages: () => [],
-      isAgentMode: () => true,
+      isAgentMode: () => false,
       getSelectedProfile: () => ({
         entryId: "openai::gpt-4.1",
         model: "gpt-4.1",

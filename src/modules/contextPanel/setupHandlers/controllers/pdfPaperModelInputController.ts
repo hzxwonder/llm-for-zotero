@@ -109,6 +109,7 @@ export async function resolvePdfModeModelInputs(params: {
   currentModelName: string;
   isWebChat?: boolean;
   useCodexAttachmentPolicy?: boolean;
+  usePaperTools?: boolean;
 }): Promise<PdfPaperModelInputResult> {
   const {
     deps,
@@ -136,12 +137,19 @@ export async function resolvePdfModeModelInputs(params: {
   const pdfPageImageDataUrls: string[] = [];
   const pdfUploadSystemMessages: string[] = [];
   let localDocuments: readonly LocalDocumentResource[] = [];
+  // Library PDFs remain in the turn scope for paper_read; no eager conversion
+  // or provider file upload is needed by plugin-owned Agent runtimes.
+  const usePaperTools = params.usePaperTools === true && !isWebChat;
   const hasProviderProcessedPdfs =
-    paperContexts.length > 0 && !isWebChat && pdfSupport === "native";
+    paperContexts.length > 0 &&
+    !isWebChat &&
+    !usePaperTools &&
+    pdfSupport === "native";
 
   if (
     !isWebChat &&
-    ((paperContexts.length > 0 &&
+    ((!usePaperTools &&
+      paperContexts.length > 0 &&
       pdfSupport !== "native" &&
       pdfSupport !== "local_path") ||
       (selectedPdfFiles.length > 0 && pdfSupport !== "native"))
@@ -149,7 +157,12 @@ export async function resolvePdfModeModelInputs(params: {
     return fail(deps, pdfSupport, FULL_PDF_UNSUPPORTED_MESSAGE);
   }
 
-  if (!isWebChat && pdfSupport === "local_path" && paperContexts.length > 0) {
+  if (
+    !isWebChat &&
+    !usePaperTools &&
+    pdfSupport === "local_path" &&
+    paperContexts.length > 0
+  ) {
     try {
       localDocuments = await deps.resolveLocalPdfResources(paperContexts);
     } catch (error) {

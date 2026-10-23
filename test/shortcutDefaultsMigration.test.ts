@@ -277,7 +277,7 @@ describe("shortcut reset", function () {
     assert.deepEqual(getShortcutOrder(), []);
   });
 
-  it("resets to the current five built-in shortcut identities", function () {
+  it("resets to the current built-in shortcut identities", function () {
     seedShortcutPrefs();
 
     resetShortcutsToDefault();
@@ -285,6 +285,9 @@ describe("shortcut reset", function () {
     assert.deepEqual(
       BUILTIN_SHORTCUT_FILES.map((shortcut) => shortcut.id),
       [
+        "paper-quick-understanding",
+        "paper-mastery-archive",
+        "paper-deep-reading",
         "summarize",
         "key-points",
         "methodology",
@@ -292,7 +295,7 @@ describe("shortcut reset", function () {
         "mermaid-diagram",
       ],
     );
-    assert.equal(BUILTIN_SHORTCUT_FILES.length, 5);
+    assert.equal(BUILTIN_SHORTCUT_FILES.length, 8);
     assert.deepEqual(getShortcutOverrides(), {});
     assert.deepEqual(getDeletedShortcutIds(), []);
     assert.deepEqual(getCustomShortcuts(), []);

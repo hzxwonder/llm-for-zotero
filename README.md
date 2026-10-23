@@ -27,6 +27,53 @@ Documentation:
   <img src="./assets/demo.png" alt="Screenshot of the llm-for-zotero sidebar inside the Zotero PDF reader" width="1024" />
 </p>
 
+## 论文学习与 Obsidian 本地归档
+
+此分支基于 [yilewang/llm-for-zotero](https://github.com/yilewang/llm-for-zotero)，提供 DeepSeek Harness、论文学习按钮和 Obsidian 本地笔记工作流。下载本分支的 [Zotero 安装包和 Harness 运行包](https://github.com/hzxwonder/llm-for-zotero/releases/latest)。项目遵循 AGPL-3.0-or-later，保留原项目作者和许可证。
+
+### 安装 Zotero 插件
+
+1. 在发布页下载 `llm-for-zotero.xpi`。
+2. 打开 Zotero → 工具 → 插件，点击齿轮 → 从文件安装插件，选择 XPI，重启 Zotero。
+3. 在 LLM-for-Zotero 设置中配置自己的 AI 服务商及支持工具调用的模型。在论文阅读页开启 Agent。
+4. 聊天框提供 **论文透视**、**快速理解**、**掌握测验与 Obsidian 归档** 三个按钮。技能也可以通过 `/` 菜单选择。它们使用当前选中的服务商，不包含 API 密钥或个人配置。
+
+### 安装 Obsidian 与准备 Vault
+
+1. 从 [Obsidian 官方下载页](https://obsidian.md/download) 安装系统对应的版本，参考 [官方安装说明](https://obsidian.md/help/install)。
+2. 打开 Obsidian，选择 **创建新仓库**，创建用于论文笔记的本地文件夹。也可以使用已有 Vault。至少打开一次，使文件夹中包含 `.obsidian`。
+3. 在 Obsidian 设置 → 核心插件中启用 **Bases（数据库）**，用于显示论文索引。
+4. 在 Zotero 设置 → LLM-for-Zotero → Agent → 所有运行时共用 → **笔记目录**，选择 Vault 根目录。这里应选择含 `.obsidian` 的文件夹。
+5. 安装 Python 3.10 或更新版本。执行已有 YAML 索引迁移前，按 Python 的环境管理方式安装 `PyYAML>=6,<7`。推荐在 Agent 显示的工作目录中创建 `.venv` 虚拟环境；插件会识别其中的 Python 解释器。用于裁图的 Poppler 需在 PATH 中提供 `pdftotext` 与 `pdftoppm`；macOS 可通过 `brew install poppler`，Linux 可通过系统包管理器安装 `poppler-utils`，Windows 可安装 Poppler 并把其 `bin` 加入 PATH。
+6. Agent 第一次使用时会获得本机工作目录及助手路径。若使用虚拟环境，工作目录中的 `.venv` 会被自动识别，其他位置的解释器可直接告诉 Agent。助手和参考文件随 XPI 安装，无须另行复制私人 skill。
+
+### 使用流程
+
+- **快速理解**：检查同一论文和 PDF 的已有材料；按需读论文、核对引言、裁图；生成播客式序、核心机制、统一故事和三列引言地图。交付前保存独立本地快照。聊天仅显示标准 Markdown；详细摘要与写作分析留在笔记稿。
+- **掌握测验与 Obsidian 归档**：复用快照，只补缺口。围绕论文核心机制、关键细节、实验和适用边界提出 5–10 道题，每次只显示一道并等待回答。之后整理实际讨论、批注和思考，写入统一笔记。
+- **更新已有笔记**：按 Zotero 条目身份或 DOI 查找原笔记。三方合并保留个人修改、自定义属性和引用图片；同一位置发生冲突时保留原文并请求处理。标题相似不会直接合并。
+- **索引与复习**：打开 Vault 根目录的 `论文索引.base`。论文名称可跳转笔记；新增 benchmark、baseline、故事类比和方案图预览。索引不分组，使用 特高行高（配置值 extra）。内容存于 Markdown 属性，可在 Obsidian 中继续修改。[Bases 表格行高](https://obsidian.md/help/bases/views/table)和[图片预览函数](https://obsidian.md/help/bases/functions)由 Obsidian 提供。
+
+每篇论文在 Vault 中只保存整理后的笔记及正文引用图片。源 PDF 留在 Zotero。完整快读缓存、原始证据、测验状态、备份和合并草稿保存在本机 Zotero 数据目录的 `agent-runtime/<profile>/paper-learning/`，跨聊天复用。它们属于用户的本地资料，不随插件上传。模板位于该目录的 `note-template.md`，首次安装后可以自行修改，升级保留修改。
+
+### DeepSeek Harness
+
+DeepSeek Harness 为可选执行引擎。原生 Agent 也可使用这些技能。使用 Harness 时安装 Node.js 22.19+ 或 24+，下载发布页的 `deepseek-harness-runtime.zip` 并解压到稳定目录，在目录中运行 `npm ci --ignore-scripts`。在 Agent → DeepSeek Harness 卡片中填入 Node 可执行文件和 `worker.mjs` 的绝对路径。详细说明见 [Harness 安装、会话恢复、自动压缩和重试](integrations/deepseek-harness/README.md)。
+
+### 从源码构建与验证
+
+```sh
+npm ci
+npm run build
+npm run test:harness
+python3 -m venv .venv
+.venv/bin/python -m pip install -r addon/content/paper-learning/requirements.txt
+.venv/bin/python -m unittest discover -s test/paper-learning
+```
+
+Windows 虚拟环境解释器通常位于 `.venv/Scripts/python.exe`。构建产物为 `.scaffold/build/llm-for-zotero.xpi`。个人 API 密钥、Vault 内容、工作目录和真实测试日志均不应提交到仓库。
+
+
 ## Demo Video
 
 How to do a library chat literature review with llm-for-zotero agent

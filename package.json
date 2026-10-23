@@ -1,7 +1,7 @@
 {
   "name": "llm-for-zotero",
   "type": "module",
-  "version": "3.9.12",
+  "version": "3.9.13-paper.1",
   "description": "AI research agent rooted in your Zotero library",
   "config": {
     "addonName": "llm-for-zotero",
@@ -12,13 +12,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yilewang/llm-for-zotero.git"
+    "url": "git+https://github.com/hzxwonder/llm-for-zotero.git"
   },
   "author": "Yile Wang",
   "bugs": {
-    "url": "https://github.com/yilewang/llm-for-zotero/issues"
+    "url": "https://github.com/hzxwonder/llm-for-zotero/issues"
   },
-  "homepage": "https://github.com/yilewang/llm-for-zotero#readme",
+  "homepage": "https://github.com/hzxwonder/llm-for-zotero#readme",
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "start": "zotero-plugin serve",
@@ -41,7 +41,8 @@
     "update-deps": "npm update --save",
     "test:agent:live": "node scripts/run-workflow-tests.mjs --agent-live",
     "test:harness": "npm test --prefix integrations/deepseek-harness",
-    "test:harness:live": "node scripts/run-deepseek-harness-live.mjs"
+    "test:harness:live": "node scripts/run-deepseek-harness-live.mjs",
+    "test:paper-learning": "python3 -m unittest discover -s test/paper-learning"
   },
   "dependencies": {
     "fflate": "^0.8.2",

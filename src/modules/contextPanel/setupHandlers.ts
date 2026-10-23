@@ -2495,6 +2495,17 @@ export function setupHandlers(
         (isPaperContextMineru(paperContext) ? "mineru" : "text")
       );
     }
+    if (
+      !explicit &&
+      getCurrentRuntimeMode() === "agent" &&
+      !isClaudeConversationSystem() &&
+      !isCodexConversationSystem() &&
+      isZoteroPdfAttachmentCandidate(
+        Zotero.Items.get(paperContext.contextItemId),
+      )
+    ) {
+      return "pdf";
+    }
     return (
       explicit ||
       paperContext.contentSourceMode ||

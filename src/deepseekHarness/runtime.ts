@@ -7,7 +7,11 @@ import type {
   AgentToolContext,
 } from "../agent/types";
 import type { AgentActionReceipt } from "../agent/contracts/types";
-import { buildAgentInitialMessages } from "../agent/model/messageBuilder";
+import {
+  buildAgentInitialMessages,
+  normalizeHistoryMessages,
+} from "../agent/model/messageBuilder";
+import { getConversationKeyLedgerEntry } from "../shared/conversationKeyLedger";
 import { resolveRequestProviderProtocol } from "../agent/model/factory";
 import { resolveAgentOutputRequestPolicy } from "../agent/model/limits";
 import { buildAgentModelCapabilities } from "../agent/model/contentCapabilities";
@@ -37,7 +41,10 @@ import {
 } from "../shared/conversationWriteFence";
 import { createAbortController } from "../utils/apiHelpers";
 import { createTurnUsageRecorder } from "../utils/usageTurnRecorder";
+import { resolveModelInputTokenLimit } from "../utils/modelInputCap";
 import { runHarnessProcess } from "./process";
+
+import { saveCompletedPaperReview } from "../agent/paperLearning";
 
 const activeTurns = new Map<number, () => void>();
 
@@ -257,9 +264,37 @@ async function runTurn(
       request,
       "openai_chat_compat",
     );
+    const identity = await getConversationKeyLedgerEntry(key);
+    if (!identity || identity.retiredAt)
+      throw new Error("Harness requires an active conversation identity");
+    const profileDirectory = String(
+      (Zotero as typeof Zotero & { Profile?: { dir?: string } }).Profile?.dir ||
+        "",
+    );
+    if (!profileDirectory)
+      throw new Error("Zotero profile directory is unavailable");
     const result = await runHarnessProcess(
       {
         model: request.model,
+        session: {
+          root: `${profileDirectory}/llm-for-zotero/harness`,
+          key: `${identity.instanceID}:${identity.conversationID}:${request.conversationGeneration || 0}`,
+          userText: request.userText,
+          history: normalizeHistoryMessages(request).map((message) => ({
+            role: message.role as "user" | "assistant",
+            content: text(message.content),
+          })),
+        },
+        contextWindow: resolveModelInputTokenLimit(
+          request.model,
+          request.advanced?.inputTokenCap,
+          {
+            apiBase: request.apiBase,
+            protocol: "openai_chat_compat",
+            authMode: request.authMode,
+            profileOverride: request.advanced?.profileOverride,
+          },
+        ).limitTokens,
         apiBase: request.apiBase,
         apiKey: request.apiKey,
         ...(outputPolicy.mode === "numeric"
@@ -292,7 +327,12 @@ async function runTurn(
             answer += event.text;
             context.currentAnswerText = answer;
             await emit(event);
-          } else if (event.type === "reasoning") await emit(event);
+          } else if (
+            event.type === "reasoning" ||
+            event.type === "status" ||
+            event.type === "context_compacted"
+          )
+            await emit(event);
           else if (event.type === "usage" && "round" in event) {
             usage.markDispatched();
             usage.record(event, { segment: event.round });
@@ -367,6 +407,8 @@ async function runTurn(
     await persist(() =>
       recordAgentTurn(key, request.userText, toolsUsed, answer),
     );
+    if (settlement.status === "completed")
+      await persist(() => saveCompletedPaperReview(request, answer));
     succeeded = true;
     return {
       kind: "completed",

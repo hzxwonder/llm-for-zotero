@@ -16,6 +16,9 @@ import type { AgentSkill } from "./skillLoader";
 import { getAllSkills } from "./catalog";
 export { getAllSkills, setUserSkills } from "./catalog";
 import type { SkillRoutingRequest } from "./contextEligibility";
+import paperQuickUnderstandingRaw from "./paper-quick-understanding.md";
+import paperMasteryArchiveRaw from "./paper-mastery-archive.md";
+import paperDeepReadingRaw from "./paper-deep-reading.md";
 import libraryAnalysisRaw from "./library-analysis.md";
 import comparePapersRaw from "./compare-papers.md";
 import analyzeFiguresRaw from "./analyze-figures.md";
@@ -72,6 +75,9 @@ export type {
  * Used by initUserSkills() to copy defaults to the user folder.
  */
 export const BUILTIN_SKILL_FILES: Record<string, string> = {
+  "paper-quick-understanding.md": paperQuickUnderstandingRaw,
+  "paper-mastery-archive.md": paperMasteryArchiveRaw,
+  "paper-deep-reading.md": paperDeepReadingRaw,
   "library-analysis.md": libraryAnalysisRaw,
   "compare-papers.md": comparePapersRaw,
   "analyze-figures.md": analyzeFiguresRaw,

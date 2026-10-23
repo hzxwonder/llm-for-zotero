@@ -158,6 +158,13 @@ describe("standalone document window", function () {
       true,
     );
     assert.equal(firstDoc.documentElement.children[1].rel, "stylesheet");
+    const stylesheets = firstDoc.documentElement.children
+      .filter((element) => element.rel === "stylesheet")
+      .map((element) => element.href);
+    assert.deepEqual(stylesheets, [
+      "chrome://llmforzotero/content/zoteroPane.css",
+      "chrome://llmforzotero/content/vendor/katex/katex.min.css",
+    ]);
 
     assert.isTrue(openStandaloneDocumentWindow(options));
     assert.lengthOf(openCalls, 1);

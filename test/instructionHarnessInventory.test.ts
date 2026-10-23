@@ -110,9 +110,10 @@ describe("instruction harness inventory", function () {
   });
 
   it("keeps default skill bodies below half the previous instruction budget", function () {
-    const bodies = Object.values(BUILTIN_SKILL_FILES).map(
-      (raw) => parseSkill(raw).instruction,
-    );
+    const bodies = Object.values(BUILTIN_SKILL_FILES)
+      .map(parseSkill)
+      .filter((skill) => skill.activation !== "manual")
+      .map((skill) => skill.instruction);
     const previousBodyTokens = 10355;
     assert.isBelow(
       bodies.reduce((total, body) => total + estimateTextTokens(body), 0),

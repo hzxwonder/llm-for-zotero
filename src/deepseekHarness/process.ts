@@ -8,8 +8,16 @@ export type HarnessConfiguration = {
   systemPrompt: string;
   history: Array<{ role: "user" | "assistant"; content: string }>;
   tools: Array<{ name: string; description: string; inputSchema: object }>;
+  contextWindow: number;
   maxTokens?: number;
   temperature?: number;
+  session?: {
+    root: string;
+    key: string;
+    userText: string;
+    history: Array<{ role: "user" | "assistant"; content: string }>;
+  };
+  turnText?: string;
 };
 
 export async function runHarnessProcess(
@@ -19,6 +27,8 @@ export async function runHarnessProcess(
     signal: AbortSignal;
     onStop: () => void;
     onEvent: (event: unknown) => Promise<void>;
+    /** Inactivity budget between completed model steps; tools and approvals pause it. */
+    modelTimeoutMs?: number;
     onToolCall: (call: {
       callId: string;
       name: string;
@@ -42,7 +52,12 @@ export async function runHarnessProcess(
   });
   const pending = new Map<
     number,
-    { resolve: (value: any) => void; reject: (error: Error) => void }
+    {
+      resolve: (value: any) => void;
+      reject: (error: Error) => void;
+      pause: () => void;
+      resume: (reset?: boolean) => void;
+    }
   >();
   const hostTasks = new Set<Promise<void>>();
   let sequence = 0;
@@ -65,11 +80,30 @@ export async function runHarnessProcess(
     if (stopped) return Promise.reject(new Error("Harness process closed"));
     const id = ++sequence;
     return new Promise<any>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pending.delete(id);
-        reject(new Error(`Harness ${method} timed out`));
-      }, timeout);
+      let remaining = timeout;
+      let startedAt = 0;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const pause = () => {
+        if (timer === undefined) return;
+        clearTimeout(timer);
+        timer = undefined;
+        remaining = Math.max(0, remaining - (Date.now() - startedAt));
+      };
+      const resume = (reset = false) => {
+        if (reset) {
+          pause();
+          remaining = timeout;
+        }
+        if (timer !== undefined || stopped) return;
+        startedAt = Date.now();
+        timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`Harness ${method} timed out`));
+        }, remaining);
+      };
       pending.set(id, {
+        pause,
+        resume,
         resolve: (value) => {
           clearTimeout(timer);
           resolve(value);
@@ -79,6 +113,7 @@ export async function runHarnessProcess(
           reject(error);
         },
       });
+      resume();
       void send({ id, method, params }).catch((error) => fail(error));
     });
   };
@@ -113,12 +148,16 @@ export async function runHarnessProcess(
               entry.resolve(message.result);
             }
           } else if (message.method === "event") {
+            if (message.params?.type === "usage" && !hostTasks.size)
+              for (const entry of pending.values()) entry.resume(true);
             events = events.then(() => options.onEvent(message.params));
             void events.catch((error) => fail(error));
           } else if (
             message.method === "tool_call" &&
             !options.signal.aborted
           ) {
+            // Host tools can wait for user input; only model time uses the run budget.
+            for (const entry of pending.values()) entry.pause();
             const task = (async () => {
               try {
                 const result = await options.onToolCall(message.params);
@@ -132,7 +171,11 @@ export async function runHarnessProcess(
             })();
             hostTasks.add(task);
             void task
-              .finally(() => hostTasks.delete(task))
+              .finally(() => {
+                hostTasks.delete(task);
+                if (!hostTasks.size)
+                  for (const entry of pending.values()) entry.resume(true);
+              })
               .catch((error) => fail(error));
           }
         }
@@ -155,8 +198,42 @@ export async function runHarnessProcess(
   })();
   try {
     if (options.signal.aborted) onAbort();
-    await request("initialize", configuration, 30000);
-    const result = await request("run", { text }, 600000);
+    await request("initialize", { ...configuration, turnText: text }, 30000);
+    const timeout = options.modelTimeoutMs ?? 600000;
+    let result;
+    try {
+      result = await request("run", { text }, timeout);
+    } catch (error) {
+      if (
+        options.signal.aborted ||
+        !(error instanceof Error) ||
+        error.message !== "Harness run timed out"
+      )
+        throw error;
+      await request("checkpoint", {}, 30000);
+      await options.onEvent({
+        type: "status",
+        text: "Model step timed out; session checkpoint saved. Resuming once without replaying completed tools.",
+      });
+      try {
+        result = await request(
+          "run",
+          {
+            text: "Continue the interrupted turn from the saved session.",
+            resume: true,
+          },
+          timeout,
+        );
+      } catch (resumedError) {
+        if (
+          !options.signal.aborted &&
+          resumedError instanceof Error &&
+          resumedError.message === "Harness run timed out"
+        )
+          await request("checkpoint", {}, 30000);
+        throw resumedError;
+      }
+    }
     await events;
     if (!result || typeof result.text !== "string")
       throw new Error("Invalid Harness result");

@@ -115,6 +115,9 @@ async function ensureStartupUserSkillsLoaded(): Promise<void> {
       const { initUserSkills, loadUserSkills } =
         await import("./agent/skills/userSkills");
       const { setUserSkills } = await import("./agent/skills");
+      const { installPaperLearningResources } =
+        await import("./agent/paperLearning");
+      await installPaperLearningResources();
       await initUserSkills();
       setUserSkills(await loadUserSkills());
     })();

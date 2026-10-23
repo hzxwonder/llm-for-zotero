@@ -20,7 +20,7 @@ describe("workflow: Agent paper templates", function () {
   const saved = new Map<string, unknown>();
   const marker = "PAPER-CONTEXT-ALPHA-7319";
   const prompt =
-    "请调用 library_read 读取当前论文的全文，只回复正文中以 PAPER-CONTEXT- 开头的完整验证标记。不要搜索其他论文，不要写入。";
+    "请调用 paper_read，mode 为 targeted、pages 为 2，直接读取当前 PDF 第2页。只回复以 PAPER-CONTEXT- 开头的完整验证标记。不要使用 library_read 读取全文，不要搜索其他论文，不要写入。";
   const put = (key: string, value: any) => {
     const full = `${prefix}.${key}`;
     if (!saved.has(full)) saved.set(full, Zotero.Prefs.get(full, true));
@@ -164,7 +164,8 @@ describe("workflow: Agent paper templates", function () {
           title: `Current PDF for ${engine}`,
           pdfTitle: `PDF for ${engine}`,
           pages: [
-            `This is a synthetic PDF. Its verification marker is ${marker}.`,
+            "The first page contains no verification marker.",
+            `The second page contains the verification marker ${marker}.`,
           ],
         });
         fixtures.push(fixture);
@@ -200,6 +201,15 @@ describe("workflow: Agent paper templates", function () {
           state.memory.some(
             (m) => m.role === "assistant" && String(m.text).includes(marker),
           ),
+        );
+        const user = state.memory.find((m) => m.role === "user");
+        assert.isArray(
+          user?.pdfPaperContexts,
+          "The PDF must stay in the raw-PDF tool scope",
+        );
+        assert.isUndefined(
+          user?.fullTextPaperContexts,
+          "No whole-paper text context should be requested",
         );
         assert.equal(root().dataset.basePaperItemId, `${fixture.parentItemId}`);
       },

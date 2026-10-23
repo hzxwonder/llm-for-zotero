@@ -145,6 +145,7 @@ import {
   loadSkill,
 } from "./skills";
 import { listJournalActions } from "./store/changeJournal";
+import { saveCompletedPaperReview } from "./paperLearning";
 import { recordAgentTurn } from "./store/conversationMemory";
 import {
   createAgentToolResultHandleRecord,
@@ -1918,6 +1919,9 @@ export class AgentRuntime {
             });
           await persistTranscriptCheckpoint({ requireAccepted: true });
           if (status === "completed" && redactedFinalText) {
+            await persistIfLive(() =>
+              saveCompletedPaperReview(request, redactedFinalText),
+            );
             await persistIfLive(() =>
               recordAgentTurn(
                 request.conversationKey,

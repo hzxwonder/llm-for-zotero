@@ -56,11 +56,13 @@ function installSourceTheme(sourceDoc: Document, targetDoc: Document): void {
 }
 
 function installAddonStylesheet(targetDoc: Document): void {
-  const css = targetDoc.createElementNS(HTML_NS, "link") as HTMLLinkElement;
-  css.rel = "stylesheet";
-  css.type = "text/css";
-  css.href = `chrome://${config.addonRef}/content/zoteroPane.css`;
-  targetDoc.documentElement?.appendChild(css);
+  for (const path of ["zoteroPane.css", "vendor/katex/katex.min.css"]) {
+    const css = targetDoc.createElementNS(HTML_NS, "link") as HTMLLinkElement;
+    css.rel = "stylesheet";
+    css.type = "text/css";
+    css.href = `chrome://${config.addonRef}/content/${path}`;
+    targetDoc.documentElement?.appendChild(css);
+  }
 }
 
 export function openStandaloneDocumentWindow(

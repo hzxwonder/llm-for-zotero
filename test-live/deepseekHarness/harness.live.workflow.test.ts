@@ -179,6 +179,138 @@ describe("DeepSeek Harness with the configured live provider", function () {
     report.push({ scenario: "history", passed: true });
   });
 
+  it("resumes an interrupted native session and retains an approved note write", async function () {
+    const conversationKey = await newConversation();
+    const userText = `自动验收：为 itemId=${item.id} 调用一次 note_write 新建子笔记，内容为 LFZ-HARNESS-RESUME-92。写入成功后，用至少 1000 字说明测试方法。继续时复用已完成的写入，只回答笔记中的验收口令，不再调用工具。`;
+    const controller = new AbortController();
+    let wrote = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await api.runTurn(
+        {
+          ...credentials,
+          conversationKey,
+          mode: "agent",
+          conversationKind: "global",
+          libraryID: item.libraryID,
+          userText,
+        },
+        (event: any) => {
+          if (event.type === "confirmation_required")
+            api.resolveConfirmation(event.requestId, true);
+          if (
+            event.type === "tool_result" &&
+            event.name === "note_write" &&
+            event.ok &&
+            !wrote
+          ) {
+            wrote = true;
+            timer = setTimeout(() => controller.abort(), 500);
+          }
+        },
+        { signal: controller.signal },
+      );
+    } catch (error) {
+      if (!controller.signal.aborted) throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    assert.isTrue(
+      wrote,
+      "The approved write must complete before interruption",
+    );
+    assert.isTrue(
+      controller.signal.aborted,
+      "The test must interrupt the answer",
+    );
+    const events: any[] = [];
+    const result = await api.runTurn(
+      {
+        ...credentials,
+        conversationKey,
+        mode: "agent",
+        conversationKind: "global",
+        libraryID: item.libraryID,
+        userText: "继续",
+        history: [{ role: "user", content: userText }],
+      },
+      (event: any) => events.push(event),
+    );
+    assert.equal(result.kind, "completed");
+    assert.include(result.text, "LFZ-HARNESS-RESUME-92");
+    assert.isTrue(
+      events.some(
+        (event) =>
+          event.type === "status" &&
+          event.text.includes("Resumed Harness session"),
+      ),
+    );
+    assert.isFalse(
+      events.some((event) => event.type === "tool_call"),
+      "Native tool history supplies the confirmed result",
+    );
+    const notes = await Zotero.Items.getAsync(item.getNotes());
+    assert.equal(
+      notes.filter((note: any) =>
+        note.getNote().includes("LFZ-HARNESS-RESUME-92"),
+      ).length,
+      1,
+    );
+    report.push({
+      scenario: "native_interruption_resume",
+      passed: true,
+      notesAdded: 1,
+      repeatedTools: 0,
+    });
+  });
+
+  it("compacts a long imported conversation and continues with a real Zotero tool", async function () {
+    const history = Array.from({ length: 40 }, (_, index) => ({
+      role: index % 2 ? "assistant" : "user",
+      content:
+        `自动验收历史第 ${index} 段。验收口令为 HARNESS-COMPACT-73。` +
+        "This is synthetic background for testing automatic context compaction. Preserve the test passphrase and continue the current task. ".repeat(
+          40,
+        ),
+    }));
+    const { result, events } = await run(
+      `自动验收：回答历史中的验收口令，并调用 library_read 读取 itemId=${item.id} 的摘要，回答包含摘要英文原文。`,
+      false,
+      {
+        history,
+        advanced: {
+          inputTokenCap: 65536,
+          temperature: 0.2,
+          outputTokenLimit: { mode: "custom", tokens: 4096 },
+        },
+      },
+    );
+    assert.isTrue(
+      events.some(
+        (event) => event.type === "context_compacted" && event.automatic,
+      ),
+    );
+    assert.include(result.text, "HARNESS-COMPACT-73");
+    assert.include(result.text, "synthetic paper");
+    assert.isTrue(
+      events.some(
+        (event) => event.type === "tool_call" && event.name === "library_read",
+      ),
+    );
+    assert.isAtLeast(
+      events.filter((event) => event.type === "usage").length,
+      2,
+    );
+    const trace = await api.getRunTrace(result.runId);
+    assert.equal(trace.run.status, "completed");
+    report.push({
+      scenario: "automatic_compaction",
+      passed: true,
+      retainedPassphrase: true,
+      continuedToolRead: true,
+    });
+  });
+
   it("stops an active live turn", async function () {
     const controller = new AbortController();
     let sawStatus = false;
