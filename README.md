@@ -36,9 +36,13 @@ Documentation:
 1. 在发布页下载 `llm-for-zotero.xpi`。
 2. 打开 Zotero → 工具 → 插件，点击齿轮 → 从文件安装插件，选择 XPI，重启 Zotero。
 3. 在 LLM-for-Zotero 设置中配置自己的 AI 服务商及支持工具调用的模型。在论文阅读页开启 Agent。
-4. 聊天框提供 **论文透视**、**快速理解**、**掌握测验与 Obsidian 归档** 三个按钮。技能也可以通过 `/` 菜单选择。它们使用当前选中的服务商，不包含 API 密钥或个人配置。
+4. 聊天框提供 **论文透视**、**快速理解**、**掌握测验与本地归档** 三个按钮。技能也可以通过 `/` 菜单选择。它们使用当前选中的服务商，不包含 API 密钥或个人配置。
 
-### 安装 Obsidian 与准备 Vault
+### 保存普通 Markdown 笔记
+
+Obsidian 为可选软件。未安装 Obsidian 时，可以在 Agent → **笔记目录** 中选择普通本地文件夹。未配置目录时，插件默认保存到 Zotero 数据目录下的 `agent-runtime/<profile>/paper-learning/notes/`。每篇论文保存一份统一模板的 `.md` 笔记及正文引用图片，完成后返回笔记文件路径，可用任意 Markdown 编辑器打开。已有笔记仍按论文身份查找并合并更新。普通文件夹不生成 Bases 索引；以后将同一文件夹打开为 Obsidian Vault，后续归档会沿用原笔记并补充索引。
+
+### 安装 Obsidian 与准备 Vault（可选）
 
 1. 从 [Obsidian 官方下载页](https://obsidian.md/download) 安装系统对应的版本，参考 [官方安装说明](https://obsidian.md/help/install)。
 2. 打开 Obsidian，选择 **创建新仓库**，创建用于论文笔记的本地文件夹。也可以使用已有 Vault。至少打开一次，使文件夹中包含 `.obsidian`。
@@ -50,11 +54,11 @@ Documentation:
 ### 使用流程
 
 - **快速理解**：检查同一论文和 PDF 的已有材料；按需读论文、核对引言、裁图；生成播客式序、核心机制、统一故事和三列引言地图。交付前保存独立本地快照。聊天仅显示标准 Markdown；详细摘要与写作分析留在笔记稿。
-- **掌握测验与 Obsidian 归档**：复用快照，只补缺口。围绕论文核心机制、关键细节、实验和适用边界提出 5–10 道题，每次只显示一道并等待回答。之后整理实际讨论、批注和思考，写入统一笔记。
+- **掌握测验与本地归档**：复用快照，只补缺口。围绕论文核心机制、关键细节、实验和适用边界提出 5–10 道题，每次只显示一道并等待回答。之后整理实际讨论、批注和思考，写入本地 Markdown 统一笔记。
 - **更新已有笔记**：按 Zotero 条目身份或 DOI 查找原笔记。三方合并保留个人修改、自定义属性和引用图片；同一位置发生冲突时保留原文并请求处理。标题相似不会直接合并。
 - **索引与复习**：打开 Vault 根目录的 `论文索引.base`。论文名称可跳转笔记；新增 benchmark、baseline、故事类比和方案图预览。索引不分组，使用 特高行高（配置值 extra）。内容存于 Markdown 属性，可在 Obsidian 中继续修改。[Bases 表格行高](https://obsidian.md/help/bases/views/table)和[图片预览函数](https://obsidian.md/help/bases/functions)由 Obsidian 提供。
 
-每篇论文在 Vault 中只保存整理后的笔记及正文引用图片。源 PDF 留在 Zotero。完整快读缓存、原始证据、测验状态、备份和合并草稿保存在本机 Zotero 数据目录的 `agent-runtime/<profile>/paper-learning/`，跨聊天复用。它们属于用户的本地资料，不随插件上传。模板位于该目录的 `note-template.md`，首次安装后可以自行修改，升级保留修改。
+每篇论文在 Vault 中只保存整理后的笔记及正文引用图片。源 PDF 留在 Zotero。普通 Markdown 目录采用相同的笔记与图片结构。完整快读缓存、原始证据、测验状态、备份和合并草稿保存在本机 Zotero 数据目录的 `agent-runtime/<profile>/paper-learning/`，跨聊天复用。它们属于用户的本地资料，不随插件上传。模板位于该目录的 `note-template.md`，首次安装后可以自行修改，升级保留修改。
 
 ### DeepSeek Harness
 

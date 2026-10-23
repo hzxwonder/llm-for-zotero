@@ -1,7 +1,7 @@
 ---
 id: paper-quick-understanding
 name: 快速理解
-description: 用播客开场、核心机制、同一故事和引言论证地图快速理解一篇论文，保存本地快照供后续测验与 Obsidian 归档复用。
+description: 用播客开场、核心机制、同一故事和引言论证地图快速理解一篇论文，保存本地快照供后续测验与本地 Markdown 归档复用。
 version: 1
 contexts: single-paper
 activation: manual

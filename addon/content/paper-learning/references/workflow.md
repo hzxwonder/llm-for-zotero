@@ -45,9 +45,9 @@
 2. `python3 learning_archive.py init archive-input.json`：保存返回的 jobPath。已有未完成任务沿用旧题和进度。
 3. `python3 learning_archive.py next JOB` → 等待用户回答 → `python3 learning_archive.py answer JOB q1 A`。逐题执行至 complete。
 4. 根据实际反馈整理最终稿及学习易错点后，更新 JOB 中 markdownPath 所指草稿，保留已记录的答案。再次 lookup 校验目标笔记。
-5. `python3 learning_archive.py archive JOB`：三方合并、原子写入、哈希回读，返回可点击笔记路径和 obsidianUrl。冲突时原文保留，读取返回的合并草稿，针对冲突询问用户。
+5. `python3 learning_archive.py archive JOB`：三方合并、原子写入、哈希回读，返回 notePath、noteUrl 和 format。先给 notePath 的可点击本地文件链接；format=obsidian 时另有 obsidianUrl 和 indexPath，可同时提供。冲突时原文保留，读取返回的合并草稿，针对冲突询问用户。
 
-Vault 只写整理好的论文笔记、正文引用图片及共享索引，不复制 PDF、原始聊天或答题日志。工作状态、备份和合并草稿保存在 Working directory。
+归档目录由系统写入 obsidian.json 的 vaultPath 提供，该兼容字段可指向普通文件夹。未配置笔记目录时，默认使用 Working directory/notes。普通文件夹保存标准 Markdown 笔记及正文引用图片，无需安装 Obsidian；包含 .obsidian 的目录还生成共享 Bases 索引。不复制 PDF、原始聊天或答题日志。工作状态、备份和合并草稿保存在 Working directory。
 
 ## PDF 裁图
 
@@ -55,4 +55,4 @@ Vault 只写整理好的论文笔记、正文引用图片及共享索引，不�
 
 ## 索引
 
-归档更新论文索引.base，保留自定义视图、排序和列宽；管理的论文索引表不分组，采用 特高行高（配置值 extra）。四个复习字段为 benchmark、baseline、故事类比、论文方案图；方案图使用 Bases 的 image() 预览。论文名称链接到对应笔记。已有 YAML 索引先备份再迁移为 JSON 格式的有效 Bases 配置。没有证据的元数据留待核实，个人修改通过三方合并保留。
+仅在归档目录包含 .obsidian 时更新论文索引.base，普通 Markdown 归档不创建 Bases 索引或 Obsidian 跳转链接。保留自定义视图、排序和列宽；管理的论文索引表不分组，采用 特高行高（配置值 extra）。四个复习字段为 benchmark、baseline、故事类比、论文方案图；方案图使用 Bases 的 image() 预览。论文名称链接到对应笔记。已有 YAML 索引先备份再迁移为 JSON 格式的有效 Bases 配置。没有证据的元数据留待核实，个人修改通过三方合并保留。

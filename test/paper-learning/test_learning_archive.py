@@ -60,6 +60,48 @@ class ArchiveTest(unittest.TestCase):
     def core_questions(self):
         topics=['mechanism','detail','mechanism','detail','evidence','boundary','problem']
         return [dict(q,topic=topic,evidence={'page':2,'locator':'§3','quote':'Synthetic evidence'}) for q,topic in zip(self.job['questions'],topics)]
+    def test_plain_directory_saves_markdown_and_referenced_images(self):
+        (self.vault/'.obsidian').rmdir()
+        self.finish();result=self.command('archive',str(self.path));note=Path(result['notePath'])
+        self.assertEqual(result['format'],'markdown');self.assertEqual(result['noteUrl'],note.as_uri())
+        self.assertNotIn('obsidianUrl',result);self.assertNotIn('indexPath',result)
+        self.assertFalse((self.vault/'论文索引.base').exists());self.assertFalse((self.vault/'.obsidian').exists())
+        self.assertIn('## 9. 我的自由补充',note.read_text());self.assertEqual(result['imagesVerified'],1)
+        self.assertEqual(len(list(self.vault.rglob('*.md'))),1)
+        self.assertFalse(list(self.vault.rglob('*.pdf')))
+    def test_unconfigured_archive_uses_default_local_notes(self):
+        a.CONFIG.unlink();self.finish();result=self.command('archive',str(self.path))
+        self.assertEqual(Path(result['vaultPath']),(self.root/'notes').resolve())
+        self.assertTrue(Path(result['notePath']).is_file());self.assertEqual(result['format'],'markdown')
+    def test_plain_markdown_merge_preserves_personal_content_and_images(self):
+        (self.vault/'.obsidian').rmdir()
+        self.finish();result=self.command('archive',str(self.path));note=Path(result['notePath'])
+        images={p.name:p.read_bytes() for p in (note.parent/'图片').iterdir()}
+        note.write_text(note.read_text()+'\n我的新思考。\n')
+        self.observe();draft=Path(self.job['markdownPath'])
+        draft.write_text(draft.read_text().replace('用批处理减少排队等待。','批次大小需匹配流量。'))
+        updated=self.command('archive',str(self.path))
+        self.assertEqual(result['notePath'],updated['notePath'])
+        self.assertIn('我的新思考。',note.read_text());self.assertIn('批次大小需匹配流量。',note.read_text())
+        self.assertEqual(images,{p.name:p.read_bytes() for p in (note.parent/'图片').iterdir()})
+        self.assertEqual(updated,self.command('archive',str(self.path)))
+    def test_opening_markdown_directory_as_vault_keeps_existing_note(self):
+        (self.vault/'.obsidian').rmdir()
+        self.finish();first=self.command('archive',str(self.path));note=Path(first['notePath'])
+        note.write_text(note.read_text()+'\n个人补充。\n');self.observe()
+        (self.vault/'.obsidian').mkdir();result=self.command('archive',str(self.path))
+        self.assertEqual(result['format'],'obsidian');self.assertEqual(result['notePath'],first['notePath'])
+        self.assertIn('个人补充。',note.read_text());self.assertTrue(Path(result['indexPath']).is_file())
+        self.assertTrue(result['obsidianUrl'].startswith('obsidian://'))
+    def test_plain_directory_leaves_existing_bases_file_untouched(self):
+        (self.vault/'.obsidian').rmdir();index=self.vault/'论文索引.base';index.write_text('Personal index')
+        self.finish();self.command('archive',str(self.path));self.assertEqual(index.read_text(),'Personal index')
+    def test_archive_rejects_relative_or_file_destination(self):
+        self.finish()
+        for path in ['relative/notes',str(self.root/'paper.pdf')]:
+            a.save(a.CONFIG,{'vaultPath':path})
+            with self.assertRaisesRegex(ValueError,'absolute local notes directory'):
+                self.command('archive',str(self.path))
     def test_property_additions_merge_with_personal_properties(self):
         base='---\nkind: "paper-study"\n---\n\nText\n'
         current=base.replace('kind:', 'tags: [mine]\nkind:')+'\nMy thought.\n'

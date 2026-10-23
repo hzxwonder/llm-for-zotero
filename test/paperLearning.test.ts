@@ -115,6 +115,21 @@ describe("portable paper learning", function () {
       ),
     );
   });
+  it("configures Markdown archival with a default or selected directory", async function () {
+    await installPaperLearningResources();
+    const path = join(getPaperLearningRoot(), "obsidian.json");
+    const fallback = join(getPaperLearningRoot(), "notes");
+    assert.include(await buildPaperLearningContext(), fallback);
+    assert.equal(JSON.parse(await readFile(path, "utf8")).vaultPath, fallback);
+    const selected = join(directory, "plain-notes");
+    g.Zotero.Prefs.get = (key: string) =>
+      key.endsWith(".obsidianVaultPath") ? selected : "";
+    assert.include(await buildPaperLearningContext(), selected);
+    assert.equal(JSON.parse(await readFile(path, "utf8")).vaultPath, selected);
+    g.Zotero.Prefs.get = () => "";
+    await buildPaperLearningContext();
+    assert.equal(JSON.parse(await readFile(path, "utf8")).vaultPath, fallback);
+  });
   it("saves a complete review under the paper identity across conversations", async function () {
     const text =
       "## 1. 序\n开场\n## 2. 快速理解论文\n机制\n## 3. 故事类比\n故事\n## 4. 包装技巧\n论证";

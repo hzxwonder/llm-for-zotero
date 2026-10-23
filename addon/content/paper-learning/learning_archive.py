@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Quiz progress and verified local Obsidian bundles for Zotero."""
+"""Quiz progress and verified local Markdown notes for Zotero."""
 import difflib
 import hashlib
 import json
@@ -81,7 +81,7 @@ def validate(data):
         raise ValueError('imageReplacements must map old relative image paths to new image paths.')
     for old, new in replacements.items():
         if not old or Path(unquote(old)).is_absolute() or '..' in Path(unquote(old)).parts or new not in [i['path'] for i in images]:
-            raise ValueError('Each image replacement needs a vault-relative source and a listed new image.')
+            raise ValueError('Each image replacement needs a notes-directory-relative source and a listed new image.')
     if not Path(data['pdfPath']).read_bytes().startswith(b'%PDF-'):
         raise ValueError('The original document must be a PDF file.')
     questions = data.get('questions', [])
@@ -124,9 +124,10 @@ def mastery(job):
 
 
 def vault_path():
-    vault = Path(read(CONFIG)['vaultPath']).expanduser()
-    if not vault.is_absolute() or not vault.is_dir() or not (vault / '.obsidian').is_dir():
-        raise ValueError('Configure an existing absolute Obsidian vault directory.')
+    vault = Path(read(CONFIG)['vaultPath'] if CONFIG.exists() else BASE / 'notes').expanduser()
+    if not vault.is_absolute() or (vault.exists() and not vault.is_dir()):
+        raise ValueError('Configure an absolute local notes directory.')
+    vault.mkdir(parents=True, exist_ok=True)
     return vault
 
 
@@ -318,8 +319,9 @@ def archive(path, job):
     validate(job)
     correct, stars = mastery(job)
     vault = vault_path().resolve()
+    is_obsidian = (vault / '.obsidian').is_dir()
     index_path = vault / '论文索引.base'
-    if index_path.exists():
+    if is_obsidian and index_path.exists():
         try:
             json.loads(index_path.read_bytes())
         except ValueError:
@@ -372,7 +374,7 @@ def archive(path, job):
         else:
             image = (destination / source).resolve()
             if Path(source).is_absolute() or not image.is_relative_to(vault) or not image.is_file():
-                raise ValueError('Each embedded image must be listed in images or exist inside the vault: ' + source)
+                raise ValueError('Each embedded image must be listed in images or exist inside the notes directory: ' + source)
             image_suffix(image.read_bytes())
             name = source
         return '![' + match[1] + '](' + quote(name) + ')'
@@ -483,12 +485,13 @@ def archive(path, job):
         if digest((destination / name).read_bytes()) != digest(data):
             raise ValueError('Archive readback failed: ' + name)
     save(state_path, {'generated': proposed, 'files': manifest, 'notePath': str(note_path)})
-    index = vault / '论文索引.base'
-    update_index(vault)
-    result = {'vaultPath': str(vault), 'notePath': str(note_path), 'indexPath': str(index),
+    result = {'vaultPath': str(vault), 'notePath': str(note_path), 'noteUrl': note_path.as_uri(),
+              'format': 'obsidian' if is_obsidian else 'markdown',
               'filesVerified': len(files), 'imagesVerified': len(files) - 1, 'correct': correct,
-              'total': len(job['questions']), 'mastery': stars,
-              'obsidianUrl': 'obsidian://open?path=' + quote(str(note_path), safe='')}
+              'total': len(job['questions']), 'mastery': stars}
+    if is_obsidian:
+        result.update(indexPath=str(update_index(vault)),
+                      obsidianUrl='obsidian://open?path=' + quote(str(note_path), safe=''))
     job['archiveFiles'] = manifest
     job['archive'] = result
     job['existingNote'] = {'notePath': str(note_path), 'sha256': digest(note.encode())}

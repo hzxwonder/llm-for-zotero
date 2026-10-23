@@ -96,7 +96,7 @@ export const BUILTIN_SHORTCUT_FILES = [
   },
   {
     id: "paper-mastery-archive",
-    label: "掌握测验与 Obsidian 归档",
+    label: "掌握测验与本地归档",
     file: "paper-mastery-archive.txt",
   },
   {

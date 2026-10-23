@@ -71,11 +71,11 @@ export async function buildPaperLearningContext(): Promise<string> {
     )
       return "";
     const config = getNotesDirectoryConfig();
-    if (config)
-      await writeText(
-        joinLocalPath(root, "obsidian.json"),
-        JSON.stringify({ vaultPath: config.directoryPath }),
-      );
+    const directory = config?.directoryPath || joinLocalPath(root, "notes");
+    await writeText(
+      joinLocalPath(root, "obsidian.json"),
+      JSON.stringify({ vaultPath: directory }),
+    );
     const io = getIOUtils();
     const pythonCandidates = [
       joinLocalPath(root, ".venv", "bin", "python"),
@@ -95,9 +95,9 @@ export async function buildPaperLearningContext(): Promise<string> {
       `- Template: ${joinLocalPath(root, "note-template.md")}`,
       "- Read references/workflow.md in that directory for the exact helper commands and input schema.",
       "- Use the selected model and its tools. Save and verify the quick-review snapshot before presenting the answer. Before archival, find and reuse this paper's saved review; add only missing work.",
-      config
-        ? "- Obsidian vault is configured in obsidian.json. Keep source PDFs, quiz jobs and raw discussions in the working directory."
-        : "- For archival, ask the user to configure an Obsidian vault in Agent > Notes directory.",
+      `- Archive directory: ${directory} (configured in obsidian.json).`,
+      "- Save curated Markdown notes and referenced images there. The helper adds a Bases index and an Obsidian link only when this directory contains .obsidian. Obsidian installation is optional.",
+      "- Keep source PDFs, quiz jobs and raw discussions in the working directory. Return notePath as a clickable local file link; include obsidianUrl only when the helper returns it.",
     ].join("\n");
   } catch (error) {
     appLogger.warn("LLM: Cannot prepare paper learning resources", error);
