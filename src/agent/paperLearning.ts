@@ -41,11 +41,22 @@ export async function installPaperLearningResources(): Promise<void> {
   for (const file of RESOURCES) {
     const target = joinLocalPath(getPaperLearningRoot(), file);
     // The note template is user-editable. Helper code and reference instructions are managed resources.
-    if (file === "note-template.md" && (await io.exists(target))) continue;
-    const text = await Zotero.File.getContentsAsync(
+    if (file === "note-template.md" && (await io.exists(target))) {
+      const existing =
+        io.read && new TextDecoder().decode(await io.read(target));
+      if (existing !== "[object XMLHttpRequest]") continue;
+    }
+    const contents: unknown = await Zotero.File.getContentsAsync(
       `chrome://llmforzotero/content/paper-learning/${file}`,
     );
-    await writeText(target, String(text));
+    // Chrome URLs return an XMLHttpRequest in Zotero; local file paths return text.
+    const text =
+      typeof contents === "string"
+        ? contents
+        : (contents as { responseText?: unknown })?.responseText;
+    if (typeof text !== "string" || !text.trim())
+      throw new Error(`Cannot read bundled paper learning resource: ${file}`);
+    await writeText(target, text);
   }
 }
 

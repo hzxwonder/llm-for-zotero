@@ -57,10 +57,14 @@ describe("paper learning with the configured live provider", function () {
         "learning_archive.py",
         "note-template.md",
         "references/workflow.md",
-      ])
-        assert.isTrue(
-          await IOUtils.exists(joinLocalPath(getPaperLearningRoot(), file)),
-        );
+      ]) {
+        const resourcePath = joinLocalPath(getPaperLearningRoot(), file);
+        assert.isTrue(await IOUtils.exists(resourcePath));
+        const resource = await Zotero.File.getContentsAsync(resourcePath);
+        assert.isAbove(resource.length, 100);
+        assert.notInclude(resource, "[object XMLHttpRequest]");
+        if (file.endsWith(".py")) assert.match(resource, /^#!.*python3\n/);
+      }
       const conversationKey = 2_600_100_000 + (Date.now() % 100000);
       await ensureConversationKeyLedgerEntry({
         conversationKey,

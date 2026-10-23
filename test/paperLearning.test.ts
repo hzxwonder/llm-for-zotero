@@ -42,8 +42,8 @@ describe("portable paper learning", function () {
       Profile: { dir: "profile" },
       Prefs: { get: () => "" },
       File: {
-        getContentsAsync: async (url: string) =>
-          readFile(
+        getContentsAsync: async (url: string) => ({
+          responseText: await readFile(
             join(
               process.cwd(),
               "addon/content/paper-learning",
@@ -51,6 +51,7 @@ describe("portable paper learning", function () {
             ),
             "utf8",
           ),
+        }),
       },
       Items: { getAsync: async (id: number) => (id === 1 ? item : attachment) },
     };
@@ -93,7 +94,26 @@ describe("portable paper learning", function () {
       "references/workflow.md",
       "requirements.txt",
     ])
-      await access(join(getPaperLearningRoot(), file));
+      assert.equal(
+        await readFile(join(getPaperLearningRoot(), file), "utf8"),
+        await readFile(
+          join(process.cwd(), "addon/content/paper-learning", file),
+          "utf8",
+        ),
+      );
+  });
+  it("repairs a request-object template while retaining user templates", async function () {
+    await installPaperLearningResources();
+    const template = join(getPaperLearningRoot(), "note-template.md");
+    await writeFile(template, "[object XMLHttpRequest]");
+    await installPaperLearningResources();
+    assert.equal(
+      await readFile(template, "utf8"),
+      await readFile(
+        join(process.cwd(), "addon/content/paper-learning/note-template.md"),
+        "utf8",
+      ),
+    );
   });
   it("saves a complete review under the paper identity across conversations", async function () {
     const text =
