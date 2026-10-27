@@ -38,6 +38,8 @@ Documentation:
 3. 在 LLM-for-Zotero 设置中配置自己的 AI 服务商及支持工具调用的模型。在论文阅读页开启 Agent。
 4. 聊天框提供 **论文透视**、**快速理解**、**掌握测验与本地归档** 三个按钮。技能也可以通过 `/` 菜单选择。它们使用当前选中的服务商，不包含 API 密钥或个人配置。
 
+功能版与原版使用相同的 Zotero 插件 ID。请通过插件管理器安装本仓库发布的 XPI。安装后，插件详情中的版本应包含 `paper`，主页应指向 `hzxwonder/llm-for-zotero`；功能版的自动更新地址为本仓库的 `releases/latest/download/update-beta.json`。功能开发与安装说明保存在 `release/paper-learning` 分支，`main` 用于同步原仓。
+
 ### 保存普通 Markdown 笔记
 
 Obsidian 为可选软件。未安装 Obsidian 时，可以在 Agent → **笔记目录** 中选择普通本地文件夹。未配置目录时，插件默认保存到 Zotero 数据目录下的 `agent-runtime/<profile>/paper-learning/notes/`。每篇论文保存一份统一模板的 `.md` 笔记及正文引用图片，完成后返回笔记文件路径，可用任意 Markdown 编辑器打开。已有笔记仍按论文身份查找并合并更新。普通文件夹不生成 Bases 索引；以后将同一文件夹打开为 Obsidian Vault，后续归档会沿用原笔记并补充索引。
